@@ -17,7 +17,7 @@ on:
         type: boolean
         default: false
       hotels_now:
-        description: "проверить цены отелей сейчас (обычно — в 9, 15 и 19 ч по Токио)"
+        description: "проверить цены сейчас: отели, авиабилеты (обычно — по расписанию в config.yaml)"
         type: boolean
         default: false
 
@@ -60,6 +60,8 @@ jobs:
           # цены отелей: без ключей проверка просто выключена
           RAKUTEN_APPLICATION_ID: ${{ secrets.RAKUTEN_APPLICATION_ID }}
           RAKUTEN_ACCESS_KEY: ${{ secrets.RAKUTEN_ACCESS_KEY }}
+          # авиабилеты и Booking/Trip.com через Google: без ключа выключены
+          SERPAPI_API_KEY: ${{ secrets.SERPAPI_API_KEY }}
         run: uv run --no-sync tokyo-events run $DRY_RUN $HOTELS_NOW
 
       - name: Передать память в job save

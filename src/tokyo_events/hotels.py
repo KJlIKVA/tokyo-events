@@ -303,15 +303,18 @@ class HotelReport:
     errors: list[str] = field(default_factory=list)
 
 
-def hotels_due(db: sqlite3.Connection, now: datetime, hours: list[int]) -> bool:
-    """Настал час из run_at_hours, а с этого часа цены ещё не проверяли. GitHub запускает расписание
-    с опозданием, бывает больше часа, — тогда проверка догоняет в следующем запуске, а не пропадает."""
+def due(last: str | None, now: datetime, hours: list[int]) -> bool:
+    """Настал час из hours, а с этого часа ещё не проверяли (last — время прошлой проверки). GitHub запускает
+    расписание с опозданием, бывает больше часа, — тогда проверка догоняет в следующем запуске, а не пропадает."""
     passed = [hr for hr in hours if hr <= now.hour]
     if not passed:
         return False
     since = now.replace(hour=max(passed), minute=0, second=0, microsecond=0)
-    last = db.execute("SELECT MAX(observed_at) FROM hotel_prices").fetchone()[0]
     return not last or datetime.fromisoformat(last) < since
+
+
+def hotels_due(db: sqlite3.Connection, now: datetime, hours: list[int]) -> bool:
+    return due(db.execute("SELECT MAX(observed_at) FROM hotel_prices").fetchone()[0], now, hours)
 
 
 def check_hotels(cfg: Config, store: EventStore, sender: Any, now: datetime, client: httpx.Client,
