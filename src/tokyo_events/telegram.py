@@ -11,7 +11,7 @@ from typing import Any
 import httpx
 
 from .classify import Verdict
-from .enrich import Details, maps_url
+from .enrich import Details, Venue, maps_url
 from .sources import Item
 
 log = logging.getLogger(__name__)
@@ -36,6 +36,16 @@ def _a(url: str, text: str) -> str:
     return f'<a href="{html.escape(url, quote=True)}">{html.escape(text)}</a>'
 
 
+def _venue_line(x: Venue) -> str:
+    """Конкретное место — 🗺 ссылкой на Google Maps; линия поезда, город, несколько мест — 📍 просто текстом."""
+    e = html.escape
+    dates = f" — {e(x.dates_ru)}" if x.dates_ru else ""
+    if x.on_map:
+        return f"🗺 {_a(maps_url(x), x.name)}{dates}"
+    area = f", {e(x.area_ru)}" if x.area_ru and x.area_ru not in x.name else ""
+    return f"📍 {e(x.name)}{area}{dates}"
+
+
 def format_message(v: Verdict, item: Item, d: Details, update: bool = False) -> str:
     """Событие: ранг и название, даты, цена, место со ссылкой на Google Maps, официальный сайт, описание.
     Между частями — пустая строка (просьба пользователя: сплошняком читается плохо)."""
@@ -49,13 +59,16 @@ def format_message(v: Verdict, item: Item, d: Details, update: bool = False) -> 
         blocks.append(f"💴 {e(d.price_ru)}" if d.price_ru else "💴 Цена пока не объявлена")
     if d.venues:
         # площадки тура — одним блоком, по строке на каждую
-        blocks.append("\n".join(f"🗺 {_a(maps_url(x), x.name)}" + (f" — {e(x.dates_ru)}" if x.dates_ru else "")
-                                for x in d.venues))
+        blocks.append("\n".join(_venue_line(x) for x in d.venues))
     if d.official_url:
         blocks.append(f"🌐 {_a(d.official_url, 'Официальный сайт')}")
+    elif d.venue_url:
+        blocks.append(f"🏛 {_a(d.venue_url, 'Сайт площадки')}")
     else:
-        # официальный сайт не нашёлся — хоть что-то, откуда узнать подробности
-        blocks.append(f"🔗 {_a(item.link, f'Подробнее: {source_name(item)}')}")
+        # ни официального сайта, ни сайта площадки — хоть что-то, откуда узнать подробности
+        link = d.source_url or item.link
+        name = source_name(item) if link == item.link else source_name(Item(source="", title="", link=link))
+        blocks.append(f"🔗 {_a(link, f'Подробнее: {name}')}")
     if d.summary_ru:
         blocks.append(e(d.summary_ru))
     tags = " ".join(t for t in (CATEGORY_TAGS.get(v.category, ""),

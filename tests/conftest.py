@@ -50,15 +50,17 @@ def verdict(item_id: str, rank: str = "none", category: str = "other", artist: s
 def details(title_ru: str = "", **kw: Any) -> dict[str, Any]:
     d = {"found": True, "title_ru": title_ru, "dates_ru": "1–3 ноября 2026", "date_precision": "exact",
          "end_date": "2026-11-03", "price_ru": "", "is_free": False,
-         "venues": [{"name": "代々木公園 (Yoyogi Park)", "address": "東京都渋谷区代々木神園町2-1", "dates_ru": ""}],
-         "official_url": "https://example.org/event", "summary_ru": "Описание."}
+         "venues": [{"name": "代々木公園 (Yoyogi Park)", "address": "東京都渋谷区代々木神園町2-1", "area_ru": "Сибуя, Токио",
+                     "on_map": True, "dates_ru": ""}],
+         "summary_ru": "Описание."}
     d.update(kw)
     return d
 
 
 class FakeTransport:
     """Шаг 1 — по заголовкам: rules[заголовок] = поля вердикта (без id); неизвестное — rank none.
-    Шаг 2 (web_search) — details[заголовок] = поля подробностей; по умолчанию — событие с датами."""
+    Шаг 2 (схема подробностей) — details[заголовок] = поля; по умолчанию — событие с датами.
+    Веб-поиска нет: транспорт и не принимает такого параметра."""
 
     def __init__(self, rules: dict[str, dict[str, Any]] | None = None, tokens: int = 1000) -> None:
         self.rules = rules or {}
@@ -69,9 +71,8 @@ class FakeTransport:
         self.fail = False
         self.fail_enrich = False
 
-    def __call__(self, prompt: str, schema: dict[str, Any], *, effort: str, max_output_tokens: int,
-                 web_search: bool = False) -> tuple[str, int]:
-        if web_search:
+    def __call__(self, prompt: str, schema: dict[str, Any], *, effort: str, max_output_tokens: int) -> tuple[str, int]:
+        if "found" in schema["properties"]:  # шаг 2
             self.enrich_prompts.append(prompt)
             if self.fail_enrich:
                 raise LLMError("сбой поиска")

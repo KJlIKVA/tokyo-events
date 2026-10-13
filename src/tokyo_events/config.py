@@ -26,13 +26,11 @@ Effort = Literal["minimal", "low", "medium", "high"]
 
 
 class EnrichConfig(BaseModel):
-    """Шаг 2: по каждому отобранному событию модель ищет в интернете даты, цену, место и официальный сайт."""
+    """Шаг 2: код скачивает статью, модель по её тексту пишет даты, цену, место и описание (без поиска)."""
     effort: Effort = "low"
-    max_output_tokens: int = 12000
-    search_context_size: Literal["low", "medium", "high"] = "medium"
-    reserve_search_tokens: int = 40000  # сколько входных токенов закладывать в бюджет на результаты поиска
+    max_output_tokens: int = 6000
+    article_chars: int = 5000  # сколько знаков статьи давать модели
     max_per_run: int = 20
-    price_per_search: float = 0.01      # USD за один поиск — только для отчёта о расходах в логе
 
 
 class LLMConfig(BaseModel):

@@ -65,13 +65,13 @@ class BudgetExceeded(LLMError):
 
 
 class Transport(Protocol):
-    def __call__(self, prompt: str, schema: dict[str, Any], *, effort: str, max_output_tokens: int,
-                 web_search: bool = False) -> tuple[str, int]:
+    def __call__(self, prompt: str, schema: dict[str, Any], *, effort: str, max_output_tokens: int) -> tuple[str, int]:
         """(JSON-текст ответа, всего токенов). Бросает LLMError."""
 
 
 class OpenAITransport:
-    """OpenAI Responses API со Structured Outputs; при web_search модель может искать в интернете."""
+    """OpenAI Responses API со Structured Outputs. Без инструментов: модель не ищет в интернете
+    (решение пользователя — поиск слишком дорогой; ссылки находит код)."""
 
     def __init__(self, cfg: LLMConfig) -> None:
         from openai import OpenAI
@@ -80,14 +80,9 @@ class OpenAITransport:
         self.client = OpenAI(api_key=env("OPENAI_API_KEY", required=True), timeout=cfg.request_timeout_s,
                              max_retries=2)
 
-    def __call__(self, prompt: str, schema: dict[str, Any], *, effort: str, max_output_tokens: int,
-                 web_search: bool = False) -> tuple[str, int]:
+    def __call__(self, prompt: str, schema: dict[str, Any], *, effort: str, max_output_tokens: int) -> tuple[str, int]:
         import openai
 
-        kwargs: dict[str, Any] = {}
-        if web_search:
-            kwargs["tools"] = [{"type": "web_search", "search_context_size": self.cfg.enrich.search_context_size,
-                                "user_location": {"type": "approximate", "country": "JP", "city": "Tokyo"}}]
         try:
             resp = self.client.responses.create(
                 model=self.cfg.model,
@@ -96,7 +91,6 @@ class OpenAITransport:
                 max_output_tokens=max_output_tokens,
                 store=False,
                 text={"format": {"type": "json_schema", "name": "tokyo_events", "schema": schema, "strict": True}},
-                **kwargs,
             )
         except openai.OpenAIError as e:
             raise LLMError(f"{type(e).__name__}: {str(e)[:300]}") from e
@@ -104,21 +98,18 @@ class OpenAITransport:
         inp = getattr(u, "input_tokens", 0) or 0
         cached = getattr(getattr(u, "input_tokens_details", None), "cached_tokens", 0) or 0
         out = getattr(u, "output_tokens", 0) or 0
-        searches = sum(1 for o in resp.output if getattr(o, "type", "") == "web_search_call")
         if self.cfg.price_per_1m:
             p = self.cfg.price_per_1m
             cost = ((inp - cached) * p.input + cached * (p.cached_input or p.input) + out * p.output) / 1e6
-            cost += searches * self.cfg.enrich.price_per_search
-            log.info("модель: вход %d (кэш %d), выход %d токенов, поисков %d ≈ $%.4f", inp, cached, out, searches,
-                     cost)
+            log.info("модель: вход %d (кэш %d), выход %d токенов ≈ $%.4f", inp, cached, out, cost)
         if resp.status != "completed":
             raise LLMError(f"ответ не завершён: {resp.status} {getattr(resp, 'incomplete_details', None)}")
         return resp.output_text, inp + out
 
 
-def check_budget(prompt: str, max_output_tokens: int, tokens_left: int, extra: int = 0) -> None:
-    """Верхняя оценка вызова: вход ≈ байты/2 + выход + extra (результаты поиска). Не влезает — не вызываем."""
-    reserve = len(prompt.encode("utf-8")) // 2 + max_output_tokens + extra
+def check_budget(prompt: str, max_output_tokens: int, tokens_left: int) -> None:
+    """Верхняя оценка вызова: вход ≈ байты/2 + максимум выхода. Не влезает — не вызываем."""
+    reserve = len(prompt.encode("utf-8")) // 2 + max_output_tokens
     if reserve > tokens_left:
         raise BudgetExceeded(f"дневной лимит токенов: осталось {tokens_left:,}, вызов может занять до {reserve:,}")
 

@@ -253,3 +253,13 @@ def test_clear_chat_deletes_range_but_keeps_users_own_messages():
     assert keep == {"111": {1}, "222": {5}}
     assert tg.clear("111", keep["111"]) == 249
     assert deleted == list(range(2, 251))  # всё до служебного сообщения включительно, кроме /start
+
+
+def test_place_without_map_is_plain_text():
+    d = _d(venues=[Venue(name="田園都市線 (Den-en-toshi Line)", address="", area_ru="Токио", on_map=False,
+                         dates_ru="с 11 октября"),
+                   Venue(name="東京ドーム (Tokyo Dome)", address="", area_ru="Бункё, Токио", on_map=True, dates_ru="")])
+    text = format_message(_v(), item("x"), d)
+    assert "📍 田園都市線 (Den-en-toshi Line), Токио — с 11 октября" in text
+    assert '🗺 <a href="https://www.google.com/maps/search/?api=1&amp;query=%E6%9D%B1' in text
+    assert text.count("google.com/maps") == 1

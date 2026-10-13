@@ -1,21 +1,29 @@
-"""Шаг 2 — подробности события через поиск в интернете: даты, цена, место (для Google Maps), официальный сайт."""
+"""Шаг 2 — подробности события. Без поиска в интернете силами ИИ:
+
+1. код сам скачивает статью (ссылку Google Новостей раскрывает в настоящий адрес) и достаёт текст;
+2. модель только читает этот текст и пишет уведомление: название, даты, цена, место, описание;
+3. ссылки код находит сам: официальный сайт — по подписи «公式サイト» в статье, иначе сайт площадки
+   из Wikidata; Google Maps — по названию и адресу.
+"""
 
 from __future__ import annotations
 
 import json
 import logging
 import urllib.parse
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any, Literal
 
 import httpx
 from pydantic import BaseModel, ValidationError
 
+from .article import Article, fetch_article, official_candidates
 from .classify import LLMError, Transport, Verdict, check_budget, describe_item, load_prompt, strict_object
 from .config import Config
 from .sources import USER_AGENT, Item
 from .state import Notified
+from .venue import VenueSites
 
 log = logging.getLogger(__name__)
 
@@ -26,9 +34,12 @@ class Venue(BaseModel):
     name: str
     address: str
     dates_ru: str
+    area_ru: str = ""      # район и город текстом: «Уэно, Тайто, Токио»
+    on_map: bool = True    # конкретное место, которое находится на карте (не линия поезда, не целый город)
 
 
 class Details(BaseModel):
+    # заполняет модель — по тексту статьи
     found: bool
     title_ru: str
     dates_ru: str
@@ -37,8 +48,11 @@ class Details(BaseModel):
     price_ru: str
     is_free: bool
     venues: list[Venue]
-    official_url: str
     summary_ru: str
+    # заполняет код — модель к ссылкам не прикасается
+    official_url: str = ""
+    venue_url: str = ""
+    source_url: str = ""
 
     @property
     def has_dates(self) -> bool:
@@ -53,8 +67,9 @@ class Details(BaseModel):
 
 
 def schema() -> dict[str, Any]:
+    """Только то, что модель берёт из текста. Ссылок в схеме нет."""
     s = {"type": "string"}
-    venue = strict_object({"name": s, "address": s, "dates_ru": s})
+    venue = strict_object({"name": s, "address": s, "area_ru": s, "on_map": {"type": "boolean"}, "dates_ru": s})
     return strict_object({
         "found": {"type": "boolean"},
         "title_ru": s,
@@ -64,7 +79,6 @@ def schema() -> dict[str, Any]:
         "price_ru": s,
         "is_free": {"type": "boolean"},
         "venues": {"type": "array", "items": venue},
-        "official_url": s,
         "summary_ru": s,
     })
 
@@ -76,8 +90,7 @@ def maps_url(venue: Venue) -> str:
 
 
 def url_alive(url: str, client: httpx.Client) -> bool:
-    """Проверка, что модель не придумала адрес сайта: страница должна открываться.
-    403/405 — сайт есть, просто не любит роботов."""
+    """Страница должна открываться. 403/405 — сайт есть, просто не любит роботов."""
     if not url.startswith(("http://", "https://")):
         return False
     try:
@@ -91,33 +104,61 @@ def url_alive(url: str, client: httpx.Client) -> bool:
 class Enricher:
     cfg: Config
     transport: Transport
-    client: httpx.Client | None = None  # для проверки официального сайта; None — не проверять
+    client: httpx.Client | None = None  # None — без сети (тесты): статьи не качаем, ссылки не ищем
+    venues: VenueSites | None = field(default=None, init=False)
 
-    def build_prompt(self, item: Item, v: Verdict, previous: Notified | None, now: datetime) -> str:
+    def __post_init__(self) -> None:
+        if self.client is not None:
+            self.venues = VenueSites(self.client)
+
+    def build_prompt(self, item: Item, v: Verdict, previous: Notified | None, now: datetime,
+                     article: Article | None) -> str:
         artist_line = f"Артист: {v.artist}." if v.artist else ""
         update_line = (f"Это ОБНОВЛЕНИЕ уже отправленного события: «{previous.title}» "
                        f"(было: когда — {previous.when or '?'}, где — {previous.where or '?'}). "
                        "В summary_ru напиши, что изменилось.") if previous else ""
+        if article and article.text:
+            text = "\n".join(x for x in (article.title, article.description, article.text) if x)
+        else:
+            text = "(текст статьи недоступен — есть только заголовок)"
         return (load_prompt("enrich.txt").replace("{today}", f"{now:%Y-%m-%d}")
-                .replace("{item}", describe_item("—", item, now) + f"\nссылка на новость: {item.link}")
+                .replace("{item}", describe_item("—", item, now))
                 .replace("{category}", v.category)
                 .replace("{artist_line}", artist_line)
-                .replace("{update_line}", update_line))
+                .replace("{update_line}", update_line)
+                .replace("{article}", text))
 
     def enrich(self, item: Item, v: Verdict, previous: Notified | None, now: datetime,
                tokens_left: int) -> tuple[Details, int]:
         ec = self.cfg.llm.enrich
-        prompt = self.build_prompt(item, v, previous, now)
-        check_budget(prompt, ec.max_output_tokens, tokens_left, extra=ec.reserve_search_tokens)
-        text, tokens = self.transport(prompt, schema(), effort=ec.effort, max_output_tokens=ec.max_output_tokens,
-                                      web_search=True)
+        article = fetch_article(item.link, self.client, ec.article_chars) if self.client is not None else None
+        if self.client is not None and article is None:
+            log.info("   статья не скачалась — у модели только заголовок")
+        prompt = self.build_prompt(item, v, previous, now, article)
+        check_budget(prompt, ec.max_output_tokens, tokens_left)
+        text, tokens = self.transport(prompt, schema(), effort=ec.effort, max_output_tokens=ec.max_output_tokens)
         try:
             d = Details.model_validate(json.loads(text))
         except (json.JSONDecodeError, ValidationError) as e:
             raise LLMError(f"подробности: ответ модели не прошёл проверку: {str(e)[:300]}") from e
         d.venues = [x for x in d.venues if x.name.strip()][:MAX_VENUES]
-        d.official_url = d.official_url.strip()
-        if d.official_url and self.client is not None and not url_alive(d.official_url, self.client):
-            log.warning("официальный сайт %s не открывается — не показываем", d.official_url)
-            d.official_url = ""
+        d.source_url = article.url if article else item.link
+        self._find_links(d, item, article)
         return d, tokens
+
+    def _find_links(self, d: Details, item: Item, article: Article | None) -> None:
+        """Ссылки — только кодом: официальный сайт события, иначе сайт площадки."""
+        if self.client is None:
+            return
+        if item.artist:
+            # новость с официального сайта артиста — она сама и есть официальная страница
+            d.official_url = item.link
+            return
+        for url in (official_candidates(article, item.title) if article else [])[:4]:
+            if url_alive(url, self.client):
+                d.official_url = url
+                return
+        if d.venues and self.venues is not None:
+            site = self.venues.lookup(d.venues[0].name)
+            if site and url_alive(site, self.client):
+                d.venue_url = site
