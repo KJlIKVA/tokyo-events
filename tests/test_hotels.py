@@ -67,14 +67,14 @@ class FakeApi:
         self.price, self.hotels, self.names = price, hotels, names or {}
         self.calls = []
 
-    def search(self, area, checkin, adults, nights, page=1):
+    def search(self, area, checkin, adults, nights, two_meals=False, page=1):
         self.calls.append((checkin, nights))
         out = []
         for no in self.hotels:
             p = self.price(no, checkin, nights)
             if p:
                 out.append(hotel(no, self.names.get(no, f"Рёкан {no}"), [(p, 1, 1, "2食付き")]))
-        return out
+        return out, 1
 
 
 def only(cfg, *stays):
@@ -116,15 +116,24 @@ def test_friday_two_nights_compared_with_other_fridays(cfg):
     assert len(api.calls) == 8  # 4 пятницы × (1 и 2 ночи)
 
 
-def test_same_day_deal_comes_first_with_sound(cfg):
+def test_same_day_deal_has_sound_and_order_is_by_color(cfg):
     only(cfg, ("today", 1), ("sat", 1))
-    # сегодня (вт) дешевле других вторников на 20% — зелёная скидка, но «сегодня» — со звуком и первой
+    cfg.hotels.max_per_area = 5
+    # сегодня (вт) дешевле других вторников на 20% — зелёная, но «сегодня» — со звуком;
+    # первой идёт более крупная скидка −60% на субботу
     api = FakeApi(lambda no, d, n: 24000 if d == TODAY else (12000 if d == SAT else 30000))
     report, sender, _ = run_hotels(cfg, api)
     assert report.sent == 2
-    first, silent = sender.sent[0]
-    assert first.startswith("🟢 ♨️ −20%") and "⚡ Сегодня, вт 13 – ср 14 октября" in first and not silent
-    assert sender.sent[1][0].startswith("🟣 ♨️ −60%")
+    assert sender.sent[0][0].startswith("🟣 ♨️ −60%")
+    today_text, silent = sender.sent[1]
+    assert today_text.startswith("🟢 ♨️ −20%") and "⚡ Сегодня, вт 13 – ср 14 октября" in today_text and not silent
+
+
+def test_one_best_deal_per_area_per_run(cfg):
+    only(cfg, ("sat", 1))
+    api = FakeApi(lambda no, d, n: ({1: 20000, 2: 10000, 3: 25000}[no] if d == SAT else 30000), hotels=(1, 2, 3))
+    report, sender, _ = run_hotels(cfg, api)
+    assert report.sent == 1 and sender.sent[0][0].startswith("🟣 ♨️ −67%")
 
 
 def test_only_nearest_weeks_are_alerted(cfg):
@@ -146,6 +155,7 @@ def test_small_discounts_are_ignored(cfg):
 
 def test_color_tiers_and_silence(cfg):
     only(cfg, ("sat", 1))
+    cfg.hotels.max_per_area = 5
     api = FakeApi(lambda no, d, n: ((26000 if no == 1 else 20000) if d == SAT else 30000), hotels=(1, 2))
     _, sender, _ = run_hotels(cfg, api)
     heads = {t.split(" · ")[0]: s for t, s in sender.sent}
@@ -154,6 +164,7 @@ def test_color_tiers_and_silence(cfg):
 
 def test_price_drop_vs_history_and_no_repeat(cfg):
     only(cfg, ("sat", 1))
+    cfg.hotels.max_per_area = 5
     store = EventStore(":memory:")
     report, _, store = run_hotels(cfg, FakeApi(lambda no, d, n: 30000), store)
     assert report.sent == 0
@@ -173,11 +184,11 @@ def test_low_rated_hotels_skipped(cfg):
     api = FakeApi(lambda no, d, n: 10000 if d == SAT else 35000)
     orig = api.search
 
-    def search(area, checkin, adults, nights, page=1):
-        out = orig(area, checkin, adults, nights)
+    def search(area, checkin, adults, nights, two_meals=False, page=1):
+        out, pages = orig(area, checkin, adults, nights)
         for h in out:
             h["hotel"][0]["hotelBasicInfo"]["reviewAverage"] = 2.9
-        return out
+        return out, pages
 
     api.search = search
     report, _, _ = run_hotels(cfg, api)
@@ -221,17 +232,20 @@ def test_rakuten_request_params_and_errors():
             return httpx.Response(404, json={"error": "not_found"})
         if request.url.params["checkinDate"] == "2026-10-31":
             return httpx.Response(403, json={"errors": {"errorCode": 403, "errorMessage": "Invalid Access Key"}})
-        return httpx.Response(200, json={"hotels": [hotel(1, "A", [(20000, 1, 1, "p")])]})
+        return httpx.Response(200, json={"hotels": [hotel(1, "A", [(20000, 1, 1, "p")])],
+                                         "pagingInfo": {"pageCount": 3}})
 
     api = Rakuten("APP", "KEY", httpx.Client(transport=httpx.MockTransport(handler)),
                   origin="https://kjlikva.github.io", sleep=lambda s: None)
     area = HotelArea(name="Хаконэ", lat=35.2, lon=139.1, radius_km=3, onsen=True)
-    assert len(api.search(area, date(2026, 10, 17), 2, 1)) == 1
+    hotels, pages = api.search(area, date(2026, 10, 17), 2, 1, two_meals=True)
+    assert len(hotels) == 1 and pages == 3
     q = seen[0].url.params
     assert (q["applicationId"], q["checkoutDate"], q["adultNum"], q["datumType"], q["squeezeCondition"],
-            q["searchPattern"], q["sort"]) == ("APP", "2026-10-18", "2", "1", "onsen", "1", "+roomCharge")
+            q["searchPattern"], q["sort"]) == ("APP", "2026-10-18", "2", "1", "onsen,dinner,breakfast", "0",
+                                               "+roomCharge")
     assert seen[0].headers["accessKey"] == "KEY" and seen[0].headers["Origin"] == "https://kjlikva.github.io"
-    assert api.search(area, date(2026, 10, 24), 2, 1) == []  # свободных номеров нет
+    assert api.search(area, date(2026, 10, 24), 2, 1) == ([], 0)  # свободных номеров нет
     try:
         api.search(area, date(2026, 10, 31), 2, 1)
         raise AssertionError("ожидалась ошибка")
@@ -256,3 +270,27 @@ def test_format_deal_escapes(cfg):
     text = format_deal(Deal(o, 35000, 71, "usual", "purple"), cfg)
     assert "<b>Рёкан &lt;A&amp;B&gt;</b>" in text and 'href="https://x.jp/?a=1&amp;b=2"' in text
     assert "⭐ 4.5 · план: «план &lt;1&gt;»" in text and text.endswith("#отели #Хаконэ")
+
+
+def test_more_pages_in_big_cities(cfg):
+    only(cfg, ("sat", 1))
+    cfg.hotels.max_pages = 2
+    cfg.hotels.max_per_area = 5
+
+    class Paged(FakeApi):
+        def search(self, area, checkin, adults, nights, two_meals=False, page=1):
+            self.calls.append((checkin, page))
+            p = 10000 if checkin == SAT else 35000
+            return [hotel(page, f"Отель {page}", [(p, 1, 1, "2食")])], 5
+
+    api = Paged(lambda *a: None)
+    report, _, _ = run_hotels(cfg, api)
+    assert len(api.calls) == 8 and report.offers == 8 and report.sent == 2  # 4 субботы × 2 страницы из 5
+
+
+def test_null_fields_from_api():
+    raw = [hotel(1, "Рёкан", [(30000, 1, 1, "x")])]
+    raw[0]["hotel"][1]["roomInfo"][0]["roomBasicInfo"]["planName"] = None   # бывает в живом API
+    raw[0]["hotel"][0]["hotelBasicInfo"]["address2"] = None
+    o = parse_offers(raw, "Хаконэ", "2026-10-17", 1, 2, two_meals=True)[0]
+    assert o.plan_name == "" and o.address == "神奈川県"

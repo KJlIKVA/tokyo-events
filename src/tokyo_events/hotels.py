@@ -112,16 +112,20 @@ class Rakuten:
         self.app_id, self.access_key, self.client, self.origin = app_id, access_key, client, origin
         self.sleep, self.pause_s = sleep, pause_s
 
-    def search(self, area: HotelArea, checkin: date, adults: int, nights: int, page: int = 1) -> list[dict]:
-        """Сырые записи отелей. Нет свободных номеров — пустой список."""
+    def search(self, area: HotelArea, checkin: date, adults: int, nights: int, two_meals: bool = False,
+               page: int = 1) -> tuple[list[dict], int]:
+        """(записи отелей, сколько всего страниц). Нет свободных номеров — пустой список.
+        Одна запись на отель — его самый дешёвый подходящий тариф (проверено на живом API: совпадает
+        с минимумом по всем тарифам). two_meals — только тарифы с ужином и завтраком."""
         params = {
             "applicationId": self.app_id, "format": "json", "formatVersion": 1,
             "checkinDate": checkin.isoformat(), "checkoutDate": (checkin + timedelta(days=nights)).isoformat(),
             "adultNum": adults, "latitude": area.lat, "longitude": area.lon, "datumType": 1,
-            "searchRadius": area.radius_km, "searchPattern": 1, "sort": "+roomCharge", "hits": 30, "page": page,
+            "searchRadius": area.radius_km, "searchPattern": 0, "sort": "+roomCharge", "hits": 30, "page": page,
         }
-        if area.onsen:
-            params["squeezeCondition"] = "onsen"
+        squeeze = (["onsen"] if area.onsen else []) + (["dinner", "breakfast"] if two_meals else [])
+        if squeeze:
+            params["squeezeCondition"] = ",".join(squeeze)
         # с 2026 года Rakuten пускает запросы только с сайта, указанного в приложении (заголовок Origin)
         headers = {"accessKey": self.access_key, **({"Origin": self.origin} if self.origin else {})}
         for attempt in range(3):
@@ -131,13 +135,14 @@ class Rakuten:
             except httpx.HTTPError as e:
                 raise RakutenError(f"нет ответа ({type(e).__name__})") from None
             if r.status_code == 404:  # not_found — свободных номеров нет
-                return []
+                return [], 0
             if r.status_code == 429 and attempt < 2:
                 self.sleep(10.0 * (attempt + 1))
                 continue
             if r.status_code != 200:
                 raise RakutenError(f"{r.status_code} {_error_text(r)}")
-            return r.json().get("hotels", [])
+            data = r.json()
+            return data.get("hotels", []), int((data.get("pagingInfo") or {}).get("pageCount") or 1)
         raise RakutenError("429: слишком много запросов")
 
 
@@ -181,11 +186,12 @@ def parse_offers(hotels: list[dict], area: str, stay_date: str, nights: int, adu
                 continue
             no = str(info.get("hotelNo"))
             if no not in best or price < best[no].price:
+                # API присылает null в части полей — везде «or ""»
                 best[no] = Offer(
-                    hotel_no=no, name=info.get("hotelName", ""), area=area, stay_date=stay_date, nights=nights,
-                    price=price, plan_name=plan.get("planName", ""),
-                    url=plan.get("reserveUrl") or info.get("planListUrl") or info.get("hotelInformationUrl", ""),
-                    address=f"{info.get('address1', '')}{info.get('address2', '')}",
+                    hotel_no=no, name=info.get("hotelName") or "", area=area, stay_date=stay_date, nights=nights,
+                    price=price, plan_name=plan.get("planName") or "",
+                    url=plan.get("reserveUrl") or info.get("planListUrl") or info.get("hotelInformationUrl") or "",
+                    address=f"{info.get('address1') or ''}{info.get('address2') or ''}",
                     review=float(info["reviewAverage"]) if info.get("reviewAverage") else None,
                     raw={k: charge.get(k) for k in ("rakutenCharge", "total", "chargeFlag")})
     return list(best.values())
@@ -325,7 +331,9 @@ def check_hotels(cfg: Config, store: EventStore, sender: Any, now: datetime, cli
         two_meals = (area.meals or h.meals) == "two_meals"
         for checkin, nights in sorted({(d, n) for d, n, _ in plan}):
             try:
-                raw = api.search(area, checkin, h.adults, nights)
+                raw, pages = api.search(area, checkin, h.adults, nights, two_meals)
+                for page in range(2, min(pages, h.max_pages) + 1):  # в больших городах — следующие страницы
+                    raw += api.search(area, checkin, h.adults, nights, two_meals, page=page)[0]
             except RakutenError as e:
                 report.errors.append(f"отели {area.name} {checkin}: {e}")
                 log.warning("отели %s %s: %s", area.name, checkin, e)
@@ -337,7 +345,10 @@ def check_hotels(cfg: Config, store: EventStore, sender: Any, now: datetime, cli
             offers += parse_offers(raw, area.name, checkin.isoformat(), nights, h.adults, two_meals)
     report.offers = len(offers)
     meals_by_area = {a.name: (a.meals or h.meals) == "two_meals" for a in h.areas}
-    deals = sorted(find_deals(db, offers, alert, cfg, today), key=lambda d: (-d.today, -d.pct))
+    # сначала по цвету, внутри — «сегодня», потом размер скидки: рёкан −60% на выходные важнее отеля −19% на сегодня
+    order = {"purple": 0, "orange": 1, "green": 2}
+    deals = sorted(find_deals(db, offers, alert, cfg, today), key=lambda d: (order[d.rank], -d.today, -d.pct))
+    per_area: dict[str, int] = {}
     at = now.isoformat(timespec="seconds")
     db.executemany("INSERT INTO hotel_prices VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                    [(o.hotel_no, o.stay_date, o.nights, at, o.price, o.area, o.plan_name, json.dumps(o.raw))
@@ -346,6 +357,8 @@ def check_hotels(cfg: Config, store: EventStore, sender: Any, now: datetime, cli
         if report.sent >= h.max_alerts_per_run:
             break
         o = deal.offer
+        if per_area.get(o.area, 0) >= h.max_per_area:
+            continue  # с одного места — только лучшая скидка за запуск
         prev = db.execute("SELECT price FROM hotel_alerts WHERE hotel_no = ? AND stay_date = ? AND nights = ?",
                           (o.hotel_no, o.stay_date, o.nights)).fetchone()
         if prev:
@@ -359,6 +372,7 @@ def check_hotels(cfg: Config, store: EventStore, sender: Any, now: datetime, cli
             report.errors.append(f"отели: {e}")
             continue
         report.errors += [f"Telegram: {p}" for p in problems or []]
+        per_area[o.area] = per_area.get(o.area, 0) + 1
         db.execute("INSERT OR REPLACE INTO hotel_alerts VALUES (?, ?, ?, ?, ?, ?)",
                    (o.hotel_no, o.stay_date, o.nights, o.price, deal.pct, at))
         report.sent += 1

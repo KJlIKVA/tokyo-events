@@ -49,7 +49,7 @@ def check_keys(app_id: str, access_key: str, client: httpx.Client) -> str | None
     """Пробный запрос цен в Хаконэ на ближайшую субботу. None — ключи работают."""
     api = Rakuten(app_id, access_key, client, origin=ORIGIN, pause_s=0)
     try:
-        api.search(TEST_AREA, saturdays(date.today(), 1)[0], adults=2, nights=1)
+        api.search(TEST_AREA, saturdays(date.today(), 1)[0], adults=2, nights=1, two_meals=True)
     except RakutenError as e:
         text = str(e)
         if "access key" in text.lower() or "applicationid" in text.lower().replace(" ", ""):

@@ -99,7 +99,9 @@ class Hotels(BaseModel):
     history_days: int = 21
     min_saving_yen: int = 3000
     min_review: float = 3.5
-    max_alerts_per_run: int = 8
+    max_alerts_per_run: int = 6
+    max_per_area: int = 1         # с одного места за запуск — только лучшая скидка
+    max_pages: int = 2            # страниц по 30 отелей на место и дату (в городах отелей сотни: берём дешёвые)
     areas: list[HotelArea] = []
 
 
