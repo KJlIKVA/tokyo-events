@@ -31,8 +31,10 @@ NOT_OFFICIAL = (
     "walkerplus.com", "timeout.jp", "timeout.com", "fashion-press.net", "natalie.mu", "oricon.co.jp",
     "bijutsutecho.com", "tokyoartbeat.com", "jorudan.co.jp", "navitime.co.jp", "tabelog.com", "jalan.net",
     "docomo.ne.jp", "livedoor.com", "infoseek.co.jp", "excite.co.jp", "nikkei.com", "asahi.com", "yomiuri.co.jp",
-    "mainichi.jp", "sankei.com", "nhk.or.jp", "ticketjam.jp",
+    "mainichi.jp", "sankei.com", "nhk.or.jp", "ticketjam.jp", "impress.co.jp", "traicy.com", "travel.co.jp",
+    "travelvoice.jp", "tabikobo.com", "trip.com", "tripadvisor.jp", "tripadvisor.com", "jalan.net",
 )
+FILE_EXT = re.compile(r"\.(jpe?g|png|gif|webp|svg|pdf|mp4|zip)(\?|$)", re.I)
 OFFICIAL_WORDS = re.compile(r"公式サイト|公式HP|公式ホームページ|公式ウェブサイト|オフィシャルサイト|"
                             r"特設サイト|特設ページ|公式ページ|official\s*(web)?\s*site|website", re.I)
 # подпись прямо перед ссылкой: «公式サイト：», «【公式サイト】», «■特設サイト»
@@ -253,15 +255,16 @@ def _overlaps_title(text: str, title: str) -> bool:
     return len(t) >= 4 and any(n.replace(" ", "") in t or t in n.replace(" ", "") for n in names)
 
 
-def official_candidates(article: Article, title: str = "") -> list[str]:
-    """Ссылки, похожие на официальный сайт события, от самой вероятной. Только другие сайты, не само СМИ."""
-    own = _site(_host(article.url))
+def official_candidates(article: Article, title: str = "", exclude: tuple[str, ...] = ()) -> list[str]:
+    """Ссылки, похожие на официальный сайт события, от самой вероятной. Только другие сайты, не само СМИ
+    (и не издание из exclude — например, оригинал перепечатки Yahoo), не картинки и не файлы."""
+    own = {_site(_host(article.url)), *(_site(_host(u)) for u in exclude if u)}
     title = title or article.title
     scored: dict[str, int] = {}
 
     def add(url: str, score: int) -> None:
         host = _host(url)
-        if not host or _blocked(host) or _site(host) == own or score <= 0:
+        if not host or _blocked(host) or _site(host) in own or FILE_EXT.search(url) or score <= 0:
             return
         scored[url] = max(scored.get(url, 0), score)
 

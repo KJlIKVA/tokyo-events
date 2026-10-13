@@ -16,6 +16,10 @@ on:
         description: "dry-run: ничего не отправлять в Telegram и не сохранять память"
         type: boolean
         default: false
+      hotels_now:
+        description: "проверить цены отелей сейчас (обычно — в 9 и 19 ч по Токио)"
+        type: boolean
+        default: false
 
 # два запуска одновременно прислали бы одно и то же дважды
 concurrency:
@@ -49,10 +53,14 @@ jobs:
         timeout-minutes: 20
         env:
           DRY_RUN: ${{ inputs.dry_run && '--dry-run' || '' }}
+          HOTELS_NOW: ${{ inputs.hotels_now && '--hotels-now' || '' }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: uv run --no-sync tokyo-events run $DRY_RUN
+          # цены отелей: без ключей проверка просто выключена
+          RAKUTEN_APPLICATION_ID: ${{ secrets.RAKUTEN_APPLICATION_ID }}
+          RAKUTEN_ACCESS_KEY: ${{ secrets.RAKUTEN_ACCESS_KEY }}
+        run: uv run --no-sync tokyo-events run $DRY_RUN $HOTELS_NOW
 
       - name: Передать память в job save
         if: always() && !inputs.dry_run

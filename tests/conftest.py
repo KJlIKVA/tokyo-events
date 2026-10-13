@@ -50,7 +50,7 @@ def verdict(item_id: str, rank: str = "none", category: str = "other", artist: s
 
 def details(title_ru: str = "", **kw: Any) -> dict[str, Any]:
     d = {"found": True, "title_ru": title_ru, "dates_ru": "1–3 ноября 2026", "date_precision": "exact",
-         "start_date": "2026-11-01", "end_date": "2026-11-03", "status": "scheduled", "location": "tokyo",
+         "start_date": "2026-11-01", "end_date": "2026-11-03", "status": "scheduled", "location": "tokyo", "discount_pct": 0,
          "price_ru": "", "is_free": False,
          "venues": [{"name": "代々木公園 (Yoyogi Park)", "address": "東京都渋谷区代々木神園町2-1", "area_ru": "Сибуя, Токио",
                      "on_map": True, "dates_ru": ""}],

@@ -240,3 +240,24 @@ def test_walkerplus_gallery_goes_to_article():
         "https://www.walkerplus.com/article/1207539/"
     assert _canonical("https://www.walkerplus.com/article/39894/image204729.html") == \
         "https://www.walkerplus.com/article/39894/"
+
+
+
+def test_images_and_source_outlet_are_not_official():
+    a = Article(url="https://news.yahoo.co.jp/articles/1", links=[
+        Link("https://cdn.some-images.net/campaign/photo.jpg", "公式サイト", ""),       # картинка
+        Link("https://www.travelnews-original.jp/docs/news/1.html", "公式サイト", ""),  # оригинал перепечатки
+        Link("https://www.fukkou-wari.jp/", "キャンペーン公式サイト", ""),
+    ])
+    assert official_candidates(a, exclude=("https://www.travelnews-original.jp",)) == ["https://www.fukkou-wari.jp/"]
+
+
+def test_outlet_url_comes_from_google_news_feed():
+    from tokyo_events.config import Source
+    from tokyo_events.sources import parse_feed
+
+    rss = b"""<?xml version="1.0"?><rss version="2.0"><channel><title>t</title><item><title>x - Travel Watch</title>
+<link>https://news.google.com/rss/articles/a</link><source url="https://travel.watch.impress.co.jp">Travel Watch</source>
+</item></channel></rss>"""
+    it = parse_feed(Source(id="gn", kind="google_news", q="x"), rss)[0]
+    assert it.outlet == "Travel Watch" and it.outlet_url == "https://travel.watch.impress.co.jp"

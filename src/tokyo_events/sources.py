@@ -32,6 +32,7 @@ class Item:
     published: datetime | None = None
     artist: str | None = None  # официальный источник артиста
     outlet: str = ""  # издание, если лента его называет (Google Новости — да)
+    outlet_url: str = ""  # сайт издания (из той же ленты)
 
     @property
     def key(self) -> str:
@@ -89,7 +90,8 @@ def parse_feed(source: Source, content: bytes) -> list[Item]:
         items.append(Item(source=source.id, title=title, link=link,
                           summary=clean_text(e.get("summary", "") or e.get("description", "")),
                           published=_entry_time(e), artist=source.artist,
-                          outlet=clean_text((e.get("source") or {}).get("title", ""), 60)))
+                          outlet=clean_text((e.get("source") or {}).get("title", ""), 60),
+                          outlet_url=((e.get("source") or {}).get("href") or "").strip()))
     return items
 
 

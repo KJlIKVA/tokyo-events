@@ -19,7 +19,7 @@ log = logging.getLogger(__name__)
 
 CIRCLES = {"green": "🟢", "orange": "🟠", "purple": "🟣"}
 CATEGORY_TAGS = {"concert": "#концерт", "exhibition": "#выставка", "festival": "#фестиваль",
-                 "opening": "#открытие", "big_event": "#грандиозное", "other": ""}
+                 "opening": "#открытие", "big_event": "#грандиозное", "deal": "#скидка", "other": ""}
 
 
 class TelegramError(RuntimeError):
@@ -84,7 +84,9 @@ def format_message(v: Verdict, item: Item, d: Details) -> str:
     """Новое событие: ранг и название, даты, цена, место (Google Maps), официальный сайт, описание.
     Между частями — пустая строка (просьба пользователя: сплошняком читается плохо)."""
     title = html.escape(d.title_ru or v.title_ru or item.title)
-    return "\n\n".join([f"{CIRCLES[v.rank]} <b>{title}</b>", *_body(v, item, d)])
+    badge = f"💸 −{d.discount_pct}% · " if v.category == "deal" and 0 < d.discount_pct < 100 else \
+        "💸 Бесплатно · " if v.category == "deal" and d.discount_pct >= 100 else ""
+    return "\n\n".join([f"{CIRCLES[v.rank]} {badge}<b>{title}</b>", *_body(v, item, d)])
 
 
 def format_update(event: Event, v: Verdict, item: Item, d: Details, changes: list[Change]) -> str:

@@ -48,6 +48,7 @@ class Details(BaseModel):
     end_date: str
     status: Literal["scheduled", "postponed", "cancelled"]
     location: Literal["tokyo", "japan", "abroad", "online", "unknown"]
+    discount_pct: int  # для скидок: наибольший процент скидки из текста (бесплатно = 100), иначе 0
     price_ru: str
     is_free: bool
     venues: list[Venue]
@@ -82,6 +83,7 @@ def schema() -> dict[str, Any]:
         "end_date": s,
         "status": {"type": "string", "enum": ["scheduled", "postponed", "cancelled"]},
         "location": {"type": "string", "enum": ["tokyo", "japan", "abroad", "online", "unknown"]},
+        "discount_pct": {"type": "integer"},
         "price_ru": s,
         "is_free": {"type": "boolean"},
         "venues": {"type": "array", "items": venue},
@@ -161,7 +163,7 @@ class Enricher:
             # новость с официального сайта артиста — она сама и есть официальная страница
             d.official_url = item.link
             return
-        for url in (official_candidates(article, item.title) if article else [])[:4]:
+        for url in (official_candidates(article, item.title, exclude=(item.outlet_url,)) if article else [])[:4]:
             if url_alive(url, self.client):
                 d.official_url = url
                 return

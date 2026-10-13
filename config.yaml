@@ -35,6 +35,38 @@ filters:
   max_new_undated: 10          # если на странице без дат разом появилось больше новых ссылок — это перестройка
                                # сайта, а не новости: молча запоминаем
 
+# Скидки для поездок (отели, рёканы, онсэны, синкансэн, достопримечательности) — по всей Японии.
+# Присылаются от min_pct; цвет — по размеру скидки.
+deals:
+  min_pct: 10
+  orange_pct: 30
+  purple_pct: 50
+
+# Цены отелей и рёканов (API 楽天トラベル, без ИИ): скидка к обычной цене того же отеля — по порогам deals.
+# Работает, только если заданы RAKUTEN_APPLICATION_ID и RAKUTEN_ACCESS_KEY (uv run tokyo-events setup-rakuten).
+hotels:
+  enabled: true
+  run_at_hours: [9, 19]        # по Токио — дважды в день, чтобы не дёргать API каждые 2 часа
+  adults: 2
+  nights: 1
+  meals: two_meals             # two_meals — ужин и завтрак (как обычно у рёканов); any — любой план
+  weekends_ahead: 6            # цены на 6 ближайших суббот — из них «обычная цена»
+  alert_weekends: 3            # о скидках сообщать на 3 ближайшие субботы
+  min_saving_yen: 3000         # и экономия не меньше 3 000 ¥
+  min_review: 3.5              # отели с рейтингом ниже не присылать
+  max_alerts_per_run: 5
+  areas:                       # центр онсэн-городка; радиус до 3 км
+    - {name: Хаконэ-Юмото, lat: 35.2329, lon: 139.1067}
+    - {name: Хаконэ-Гора, lat: 35.2483, lon: 139.0469}
+    - {name: Атами, lat: 35.0965, lon: 139.0717}
+    - {name: Ито, lat: 34.9658, lon: 139.1020}
+    - {name: Сюдзэндзи, lat: 34.9703, lon: 138.9306}
+    - {name: Югавара, lat: 35.1386, lon: 139.0828}
+    - {name: Кусацу, lat: 36.6227, lon: 138.5966}
+    - {name: Икахо, lat: 36.4975, lon: 138.9203}
+    - {name: Киногава, lat: 36.8237, lon: 139.7124}
+    - {name: Кавагутико, lat: 35.5016, lon: 138.7656}
+
 # Город для 🟢 и 🟠. 🟣 «грандиозные события» — по всей Японии.
 area: "Токио (23 района и район Тама)"
 
@@ -116,6 +148,20 @@ sources:
     kind: google_news
     q: 'Tokyo (exhibition OR festival OR "grand opening" OR "opens") when:2d'
     lang: en
+
+  # --- скидки для поездок (по всей Японии) ---
+  - id: gn_deals_hotels
+    kind: google_news
+    q: '(旅館 OR ホテル OR 温泉 OR 宿泊) (半額 OR 最大50%OFF OR 最大70%OFF OR タイムセール OR スーパーSALE OR 割引キャンペーン) when:2d'
+  - id: gn_deals_rail
+    kind: google_news
+    q: '(新幹線 OR JR OR えきねっと OR 特急) (半額 OR 割引 OR トクだ値 OR 早特 OR お得な切符) (発売 OR キャンペーン OR 開始) when:3d'
+  - id: gn_deals_attractions
+    kind: google_news
+    q: '(入場無料 OR 入館無料 OR 半額 OR 割引) (水族館 OR 遊園地 OR テーマパーク OR 美術館 OR 博物館 OR 動物園) キャンペーン when:2d'
+  - id: gn_deals_travel_support
+    kind: google_news
+    q: '(旅行支援 OR 宿泊割引 OR 旅行割 OR 観光キャンペーン) (開始 OR 受付 OR 割引) when:3d'
 
   # --- грандиозное по всей Японии ---
   - id: gn_japan_big

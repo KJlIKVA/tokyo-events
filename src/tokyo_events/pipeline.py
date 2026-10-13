@@ -153,12 +153,24 @@ def _effective_rank(v: Verdict) -> str:
     return v.rank if v.relevant else "none"
 
 
+def deal_rank(pct: int, cfg: Config) -> str | None:
+    """Цвет скидки по размеру: от 10% — 🟢, от 30% — 🟠, от 50% — 🟣 (пороги в config.yaml → deals)."""
+    t = cfg.deals
+    if pct >= t.purple_pct:
+        return "purple"
+    if pct >= t.orange_pct:
+        return "orange"
+    if pct >= t.min_pct:
+        return "green"
+    return None
+
+
 def _location_ok(v: Verdict, rank: str, location: str) -> bool:
-    """Правило пользователя: 🟢 и 🟠 — только Токио; 🟣 за масштаб — вся Япония;
+    """Правило пользователя: 🟢 и 🟠 — только Токио; 🟣 за масштаб и скидки для поездок — вся Япония;
     концерты своих артистов — где угодно."""
     if v.artist and v.category == "concert":
         return True
-    if rank == "purple":
+    if rank == "purple" or v.category == "deal":  # скидки для поездок — по всей Японии
         return location in ("tokyo", "japan", "unknown")
     return location in ("tokyo", "unknown")
 
@@ -276,6 +288,14 @@ class _Ctx:
             report.no_dates += 1
             _mark_seen(state, item, now)
             return
+        if v.category == "deal":
+            # скидка: цвет — по размеру; меньше порога (или процент неизвестен) — не присылаем
+            rank = deal_rank(details.discount_pct, cfg) or ""
+            if not rank:
+                log.info("   скидка %d%% — меньше порога %d%%, пропуск", details.discount_pct, cfg.deals.min_pct)
+                report.skipped += 1
+                _mark_seen(state, item, now)
+                return
         where_ok = _location_ok(v, rank, details.location)
         if not where_ok:
             log.info("   не то место для ранга %s (%s) — пропуск", rank, details.location)

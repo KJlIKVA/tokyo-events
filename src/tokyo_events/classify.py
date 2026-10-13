@@ -17,14 +17,14 @@ from .sources import Item
 
 log = logging.getLogger(__name__)
 
-CATEGORIES = ["concert", "exhibition", "festival", "opening", "big_event", "other"]
+CATEGORIES = ["concert", "exhibition", "festival", "opening", "big_event", "deal", "other"]
 
 
 class Verdict(BaseModel):
     id: str
     relevant: bool
     rank: Literal["green", "orange", "purple", "none"]
-    category: Literal["concert", "exhibition", "festival", "opening", "big_event", "other"]
+    category: Literal["concert", "exhibition", "festival", "opening", "big_event", "deal", "other"]
     artist: str
     duplicate_of: str
     update_of: str

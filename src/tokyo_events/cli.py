@@ -5,6 +5,7 @@
   tokyo-events test-telegram     — прислать в Telegram пример уведомления каждого ранга
   tokyo-events setup-telegram    — ввести токен бота и chat id (сохраняются в .env)
   tokyo-events setup-openai      — ввести свой ключ OpenAI (проверка, .env и GitHub Secrets)
+  tokyo-events setup-rakuten     — ключи 楽天トラベル: цены отелей и рёканов
   tokyo-events events [--github] — показать базу событий и историю обновлений
   tokyo-events clear-chat        — удалить сообщения бота во всех чатах (Telegram даёт удалять не старше 48 часов)
 """
@@ -24,6 +25,7 @@ from .classify import Classifier, OpenAITransport, Verdict
 from .config import env, load_config, load_dotenv
 from .enrich import Details, Enricher, Venue
 from .events_db import Event, EventStore, diff
+from .hotels import check_hotels
 from .pipeline import Report, collect, http_fetcher, run
 from .sources import Item
 from .state import State
@@ -55,6 +57,8 @@ def cmd_run(args: argparse.Namespace) -> int:
             transport = OpenAITransport(cfg.llm)
             classifier, enricher = Classifier(cfg, transport), Enricher(cfg, transport, client)
         report = run(cfg, state, store, http_fetcher(client), classifier, enricher, sender)
+        hotels = check_hotels(cfg, store, sender, datetime.now(UTC).astimezone(ZoneInfo(cfg.timezone)), client,
+                              force=args.hotels_now)
     if args.dry_run:
         print("dry-run: состояние и база не сохранены, в Telegram ничего не отправлено")
     else:
@@ -62,10 +66,13 @@ def cmd_run(args: argparse.Namespace) -> int:
         state.save(args.state)
     store.close()
     print(report.summary())
-    for e in report.errors:
+    if hotels.checked or hotels.errors:
+        print(f"отели: запросов {hotels.checked}, предложений {hotels.offers}, скидок отправлено {hotels.sent}")
+    for e in report.errors + hotels.errors:
         print("  ошибка:", e)
     # падаем только если не работает ничего: один недоступный источник — не повод для тревоги
-    return 1 if _broken(report, len(cfg.sources)) else 0
+    hotels_broken = bool(hotels.errors) and hotels.checked == 0
+    return 1 if _broken(report, len(cfg.sources)) or hotels_broken else 0
 
 
 def migrate_notified(state: State, store: EventStore) -> None:
@@ -150,21 +157,21 @@ def cmd_test_telegram(args: argparse.Namespace) -> int:
     samples = [
         ("green", "festival", "", Details(
             found=True, title_ru="Пример: осенний фестиваль в парке", dates_ru="1–3 ноября 2026, 10:00–17:00",
-            date_precision="exact", start_date="", end_date="", status="scheduled", location="tokyo",
+            date_precision="exact", start_date="", end_date="", status="scheduled", location="tokyo", discount_pct=0,
             price_ru="", is_free=True,
             official_url="",
             venues=[Venue(name="代々木公園 (Yoyogi Park)", address="東京都渋谷区代々木神園町2-1", dates_ru="")],
             summary_ru="Так выглядит зелёное уведомление: обычное событие, приходит без звука.")),
         ("orange", "exhibition", "", Details(
             found=True, title_ru="Пример: выставка с картиной Ван Гога", dates_ru="10 октября 2026 – 10 января 2027",
-            date_precision="exact", start_date="", end_date="", status="scheduled", location="tokyo",
+            date_precision="exact", start_date="", end_date="", status="scheduled", location="tokyo", discount_pct=0,
             price_ru="взрослые 2 400 ¥",
             is_free=False,
             official_url="https://www.cincinnati-art2026.jp/", venues=[ueno],
             summary_ru="Так выглядит оранжевое уведомление: интереснее обычного.")),
         ("purple", "concert", "Ado", Details(
             found=True, title_ru="Пример: тур Ado", dates_ru="март 2027", date_precision="approximate",
-            start_date="", end_date="", status="scheduled", location="tokyo",
+            start_date="", end_date="", status="scheduled", location="tokyo", discount_pct=0,
             price_ru="", is_free=False, official_url="",
             venues=[Venue(name="東京ドーム (Tokyo Dome)", address="東京都文京区後楽1-3-61", dates_ru="11–12 марта"),
                     Venue(name="京セラドーム大阪 (Kyocera Dome Osaka)", address="大阪市西区千代崎3-中2-1",
@@ -211,6 +218,12 @@ def cmd_clear_chat(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_setup_rakuten(args: argparse.Namespace) -> int:
+    from .setup_rakuten import main as setup
+
+    return setup()
+
+
 def cmd_setup_openai(args: argparse.Namespace) -> int:
     from .setup_openai import main as setup
 
@@ -226,6 +239,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("-v", "--verbose", action="store_true")
     sub = p.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("run", help="один запуск")
+    r.add_argument("--hotels-now", action="store_true", help="проверить цены отелей сейчас, не дожидаясь часа")
     r.add_argument("--dry-run", action="store_true",
                    help="печатать уведомления вместо отправки, не сохранять состояние")
     r.set_defaults(func=cmd_run)
@@ -233,6 +247,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("test-telegram", help="тестовые уведомления").set_defaults(func=cmd_test_telegram)
     sub.add_parser("setup-telegram", help="ввести токен бота и chat id").set_defaults(func=cmd_setup_telegram)
     sub.add_parser("setup-openai", help="ввести свой ключ OpenAI").set_defaults(func=cmd_setup_openai)
+    sub.add_parser("setup-rakuten", help="ключи 楽天トラベル для цен отелей").set_defaults(func=cmd_setup_rakuten)
     ev = sub.add_parser("events", help="показать базу событий")
     ev.add_argument("--github", action="store_true", help="взять свежую базу из GitHub (ветка state)")
     ev.set_defaults(func=cmd_events)

@@ -62,6 +62,38 @@ class Filters(BaseModel):
     max_new_undated: int = 10
 
 
+class Deals(BaseModel):
+    """Скидки для поездок: присылать от min_pct; цвет по размеру скидки."""
+    min_pct: int = 10
+    orange_pct: int = 30
+    purple_pct: int = 50
+
+
+class HotelArea(BaseModel):
+    name: str
+    lat: float
+    lon: float
+    radius_km: float = 3.0   # API: 0.1–3.0
+    onsen: bool = True       # только с горячими источниками
+
+
+class Hotels(BaseModel):
+    """Цены отелей и рёканов через API 楽天トラベル: скидки к обычной цене. Пороги и цвета — как у deals."""
+    enabled: bool = True
+    run_at_hours: list[int] = [9, 19]   # по Токио; в другие запуски цены не проверяются
+    adults: int = 2
+    nights: int = 1
+    meals: Literal["two_meals", "any"] = "two_meals"
+    weekends_ahead: int = 6       # сколько ближайших суббот брать для сравнения
+    alert_weekends: int = 3       # о скидках сообщать для ближайших N суббот
+    min_compare: int = 2          # сколько других выходных нужно, чтобы считать «обычную цену»
+    history_days: int = 21
+    min_saving_yen: int = 3000
+    min_review: float = 3.5
+    max_alerts_per_run: int = 5
+    areas: list[HotelArea] = []
+
+
 class Artist(BaseModel):
     name: str
     aliases: list[str]
@@ -93,6 +125,8 @@ class Config(BaseModel):
     timezone: str = "Asia/Tokyo"
     llm: LLMConfig
     filters: Filters = Filters()
+    deals: Deals = Deals()
+    hotels: Hotels = Hotels()
     area: str
     artists: list[Artist]
     sources: list[Source]

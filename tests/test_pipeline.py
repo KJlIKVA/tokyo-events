@@ -383,3 +383,45 @@ def test_location_rules(cfg, store, classifier, enricher, transport, sender):
     # 🟣 за масштаб — Япония да, заграница нет; 🟢 — только Токио; концерт своего артиста — где угодно
     assert report.sent == {"green": 0, "orange": 0, "purple": 2} and report.skipped == 2
     assert {e.title for e in store.recent()} == {"Экспо в Осаке", "Ado тур в Сеуле"}
+
+
+
+# --- скидки для поездок ---------------------------------------------------------------------------
+
+def test_deals_threshold_and_color_by_discount(cfg, store, classifier, enricher, transport, sender):
+    titles = {"Отель −5%": 5, "Рёкан −15%": 15, "Синкансэн −35%": 35, "Рёкан −70%": 70, "Аквариум бесплатно": 100,
+              "Скидка без процента": 0}
+    transport.rules = {t: {"rank": "green", "category": "deal"} for t in titles}
+    transport.details = {t: details(t, discount_pct=pct, location="japan") for t, pct in titles.items()}
+    fetch = FakeFetcher({"gn_deals_hotels": [item(t, source="gn_deals_hotels", hours_ago=1 + i / 10)
+                                             for i, t in enumerate(titles)]})
+    report = run(cfg, ready(cfg), store, fetch, classifier, enricher, sender, now=NOW)
+    firsts = sorted(t.split("\n")[0] for t, _ in sender.sent)
+    assert firsts == sorted([
+        "🟢 💸 −15% · <b>Рёкан −15%</b>",
+        "🟠 💸 −35% · <b>Синкансэн −35%</b>",
+        "🟣 💸 −70% · <b>Рёкан −70%</b>",
+        "🟣 💸 Бесплатно · <b>Аквариум бесплатно</b>",
+    ])
+    assert report.skipped == 2  # −5% и «процент неизвестен» — меньше порога 10%
+    assert all("#скидка" in t for t, _ in sender.sent)
+
+
+def test_deals_anywhere_in_japan_but_not_abroad(cfg, store, classifier, enricher, transport, sender):
+    transport.rules = {"Онсэн в Хаконэ −40%": {"rank": "green", "category": "deal"},
+                       "Отель в Сеуле −60%": {"rank": "green", "category": "deal"}}
+    transport.details = {"Онсэн в Хаконэ −40%": details(discount_pct=40, location="japan"),
+                         "Отель в Сеуле −60%": details(discount_pct=60, location="abroad")}
+    fetch = FakeFetcher({"gn_deals_hotels": [item("Онсэн в Хаконэ −40%", source="gn_deals_hotels"),
+                                             item("Отель в Сеуле −60%", source="gn_deals_hotels", hours_ago=2)]})
+    report = run(cfg, ready(cfg), store, fetch, classifier, enricher, sender, now=NOW)
+    assert report.sent == {"green": 0, "orange": 1, "purple": 0} and report.skipped == 1
+
+
+def test_deal_threshold_from_config(cfg, store, classifier, enricher, transport, sender):
+    cfg.deals.min_pct = 20
+    transport.rules = {"Рёкан −15%": {"rank": "green", "category": "deal"}}
+    transport.details = {"Рёкан −15%": details(discount_pct=15, location="japan")}
+    report = run(cfg, ready(cfg), store, FakeFetcher({"gn_deals_hotels": [item("Рёкан −15%", source="gn_deals_hotels")]}),
+                 classifier, enricher, sender, now=NOW)
+    assert report.sent["green"] == 0 and report.skipped == 1
