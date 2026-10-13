@@ -12,6 +12,7 @@ import httpx
 
 from .classify import Verdict
 from .enrich import Details, Venue, maps_url
+from .events_db import Change, Event
 from .sources import Item
 
 log = logging.getLogger(__name__)
@@ -46,17 +47,18 @@ def _venue_line(x: Venue) -> str:
     return f"📍 {e(x.name)}{area}{dates}"
 
 
-def format_message(v: Verdict, item: Item, d: Details, update: bool = False) -> str:
-    """Событие: ранг и название, даты, цена, место со ссылкой на Google Maps, официальный сайт, описание.
-    Между частями — пустая строка (просьба пользователя: сплошняком читается плохо)."""
+def _price_line(d: Details) -> str:
     e = html.escape
-    title = e(d.title_ru or v.title_ru or item.title)
-    blocks = [f"{CIRCLES[v.rank]} {'🔄 Обновление: ' if update else ''}<b>{title}</b>", f"📅 {e(d.dates_ru)}"]
     if d.is_free:
-        blocks.append("💴 Бесплатно" + (f" ({e(d.price_ru)})" if d.price_ru and "бесплат" not in d.price_ru.lower()
-                                       else ""))
-    else:
-        blocks.append(f"💴 {e(d.price_ru)}" if d.price_ru else "💴 Цена пока не объявлена")
+        extra = f" ({e(d.price_ru)})" if d.price_ru and "бесплат" not in d.price_ru.lower() else ""
+        return "💴 Бесплатно" + extra
+    return f"💴 {e(d.price_ru)}" if d.price_ru else "💴 Цена пока не объявлена"
+
+
+def _body(v: Verdict, item: Item, d: Details) -> list[str]:
+    """Даты, цена, место, ссылка, описание, теги — общая часть нового события и обновления."""
+    e = html.escape
+    blocks = [f"📅 {e(d.dates_ru)}" if d.dates_ru else "📅 Даты пока не объявлены", _price_line(d)]
     if d.venues:
         # площадки тура — одним блоком, по строке на каждую
         blocks.append("\n".join(_venue_line(x) for x in d.venues))
@@ -75,7 +77,33 @@ def format_message(v: Verdict, item: Item, d: Details, update: bool = False) -> 
                                 f"#{v.artist.replace(' ', '_')}" if v.artist else "") if t)
     if tags:
         blocks.append(tags)
-    return "\n\n".join(blocks)
+    return blocks
+
+
+def format_message(v: Verdict, item: Item, d: Details) -> str:
+    """Новое событие: ранг и название, даты, цена, место (Google Maps), официальный сайт, описание.
+    Между частями — пустая строка (просьба пользователя: сплошняком читается плохо)."""
+    title = html.escape(d.title_ru or v.title_ru or item.title)
+    return "\n\n".join([f"{CIRCLES[v.rank]} <b>{title}</b>", *_body(v, item, d)])
+
+
+def format_update(event: Event, v: Verdict, item: Item, d: Details, changes: list[Change]) -> str:
+    """🔴 Обновление уже присланного события: что изменилось + актуальная информация целиком.
+    Чего нет в новой статье — берём из базы (например, цену, если в статье о переносе её не повторили)."""
+    e = html.escape
+    merged = d.model_copy(update={
+        "dates_ru": d.dates_ru if d.has_dates else event.dates_ru,
+        "price_ru": d.price_ru or event.price_ru,
+        "is_free": d.is_free or event.is_free,
+        "venues": d.venues or [Venue(**x) for x in event.venues],
+        "official_url": d.official_url or event.official_url,
+        "venue_url": d.venue_url or event.venue_url,
+    })
+    title = e(event.title or d.title_ru or item.title)
+    what = "\n".join(f"• {e(c.label)}: {e(c.old)} → {e(c.new)}" if c.old else f"• {e(c.label)}: {e(c.new)}"
+                     for c in changes)
+    tagged = v.model_copy(update={"category": event.category or v.category, "artist": event.artist or v.artist})
+    return "\n\n".join([f"🔴 <b>Обновление: {title}</b>", f"Что изменилось:\n{what}", *_body(tagged, item, merged)])
 
 
 def parse_chat_ids(raw: str) -> list[str]:

@@ -57,6 +57,7 @@ class Filters(BaseModel):
     notify_ranks: list[Rank] = list(RANKS)
     silent_ranks: list[Rank] = ["green"]
     memory_days: int = 45
+    memory_events: int = 150   # сколько последних событий из базы показывать модели для поиска дублей/обновлений
     seen_days: int = 60
     max_new_undated: int = 10
 

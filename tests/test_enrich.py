@@ -9,7 +9,6 @@ import httpx
 from tokyo_events.article import Article, Link, official_candidates, parse_article, resolve_google_news
 from tokyo_events.classify import OpenAITransport, Verdict
 from tokyo_events.enrich import Details, Enricher, Venue, maps_url, schema, url_alive
-from tokyo_events.state import Notified
 from tokyo_events.venue import VenueSites, clean_name
 
 from .conftest import NOW, FakeTransport, details, item
@@ -184,10 +183,14 @@ def test_venues_capped(cfg):
 
 
 def test_prompt_has_update_context(cfg):
-    prev = Notified(key="k", rank="orange", title="Ван Гог", when="осень 2026", where="Уэно", artist="", at="")
+    from tokyo_events.events_db import Event
+
+    prev = Event(id="k", rank="orange", category="exhibition", artist="", title="Ван Гог", dates_ru="осень 2026",
+                 venues=[{"name": "Уэно"}])
     prompt = Enricher(cfg, FakeTransport()).build_prompt(item("ゴッホ展"), v(), prev, NOW, None)
     assert "заголовок: ゴッホ展" in prompt and "Тип события: exhibition." in prompt and "Сегодня 2026-10-13" in prompt
-    assert "ОБНОВЛЕНИЕ уже отправленного события: «Ван Гог» (было: когда — осень 2026, где — Уэно)" in prompt
+    assert ("ОБНОВЛЕНИЕ уже отправленного события «Ван Гог». Что было известно: когда — осень 2026, где — Уэно, "
+            "цена — ?") in prompt
     assert "ничего не ищи" in prompt and "{" + "article}" not in prompt
 
 

@@ -65,7 +65,8 @@ def _v(rank="purple", category="concert", artist="美波"):
 
 def _d(**kw):
     base = dict(found=True, title_ru="美波 — тур <Timesick Traveler 2027>", dates_ru="январь 2027",
-                date_precision="approximate", end_date="", price_ru="", is_free=False,
+                date_precision="approximate", start_date="", end_date="", status="scheduled", price_ru="",
+                is_free=False,
                 venues=[], official_url="https://www.373official.com/posts/1?a=1&b=2",
                 summary_ru="3 концерта в Японии & 5 городов Азии.")
     base.update(kw)
@@ -109,8 +110,22 @@ def test_format_message_unknown_price_and_no_official_site():
     assert '🔗 <a href="https://example.com/n">Подробнее: example.com</a>' in text
 
 
-def test_format_message_update():
-    assert format_message(_v(), item("x"), _d(), update=True).startswith("🟣 🔄 Обновление: <b>")
+def test_format_update_red_with_changes_and_merged_info():
+    from tokyo_events.events_db import Change, Event
+    from tokyo_events.telegram import format_update
+
+    event = Event(id="k", rank="purple", category="concert", artist="美波", title="美波 — тур",
+                  dates_ru="январь 2027", price_ru="8 800 ¥",
+                  venues=[{"name": "Zepp Haneda", "address": "", "area_ru": "", "on_map": True, "dates_ru": ""}])
+    d = _d(dates_ru="", date_precision="unknown", price_ru="", venues=[], official_url="", summary_ru="Перенос.")
+    changes = [Change("status", "Перенесено", "по плану", "перенесено")]
+    text = format_update(event, _v(), item("x"), d, changes)
+    blocks = text.split("\n\n")
+    assert blocks[0] == "🔴 <b>Обновление: 美波 — тур</b>"
+    assert blocks[1] == "Что изменилось:\n• Перенесено: по плану → перенесено"
+    assert blocks[2] == "📅 январь 2027" and blocks[3] == "💴 8 800 ¥"  # из базы: в статье о переносе их нет
+    assert "Zepp Haneda</a>" in blocks[4]
+    assert text.endswith("#концерт #美波")
 
 
 def test_state_roundtrip_and_prune(tmp_path):
@@ -145,14 +160,16 @@ def test_schema_is_strict_and_lists_artists(cfg):
 
 
 def test_prompt_has_rules_artists_memory_and_items(cfg, classifier):
-    memory = [Notified(key="k1", rank="purple", title="Ado — тур", when="2027", where="", artist="Ado",
-                       at=NOW.isoformat())]
+    from tokyo_events.events_db import Event
+
+    memory = [Event(id="k1", rank="purple", category="concert", artist="Ado", title="Ado — тур", dates_ru="2027",
+                    status="postponed")]
     it = item("美波「Timesick Traveler 2027」ツアー開催決定", artist="美波", summary="国内3公演")
     prompt = classifier.build_prompt([("n1", it)], memory, NOW)
     assert "{" + "items" + "}" not in prompt and "{today}" not in prompt
     assert "Токио (23 района и район Тама)" in prompt
     assert "カワキヲアメク" in prompt and "актрисой 美波" in prompt  # различаем певицу и актрису
-    assert "k1 | purple | Ado — тур | 2027 | ?" in prompt
+    assert "k1 | purple | Ado — тур | 2027 | ? | ? | ПЕРЕНЕСЕНО" in prompt
     assert "id: n1\nзаголовок: 美波「Timesick Traveler 2027」ツアー開催決定\nтекст: 国内3公演" in prompt
     assert "официальный источник: 美波" in prompt
     assert 'Верни JSON: {"items": [...]}' in prompt

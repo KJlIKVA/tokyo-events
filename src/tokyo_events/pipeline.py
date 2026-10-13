@@ -13,10 +13,11 @@ import httpx
 
 from .classify import BudgetExceeded, Classifier, LLMError, Verdict
 from .config import Config, Source
-from .enrich import Enricher
+from .enrich import Details, Enricher
+from .events_db import Event, EventStore, diff
 from .sources import Item, artist_matcher, fetch_source, mentions_artist
-from .state import Notified, State
-from .telegram import TelegramError, format_message
+from .state import State
+from .telegram import TelegramError, format_message, format_update
 
 log = logging.getLogger(__name__)
 
@@ -38,11 +39,13 @@ class Report:
     skipped: int = 0
     duplicates: int = 0
     no_dates: int = 0
+    updates: int = 0
     errors: list[str] = field(default_factory=list)
 
     def summary(self) -> str:
         sent = ", ".join(f"{k}={v}" for k, v in self.sent.items())
-        return (f"собрано {self.fetched}, новых {self.new}, на оценку {self.candidates}; отправлено: {sent}; "
+        return (f"собрано {self.fetched}, новых {self.new}, на оценку {self.candidates}; отправлено: {sent}, "
+                f"обновлений 🔴: {self.updates}; "
                 f"не событие/не подходит: {self.skipped}, дублей: {self.duplicates}, без чётких дат: {self.no_dates}; "
                 f"ошибок: {len(self.errors)}")
 
@@ -101,8 +104,8 @@ def collect(cfg: Config, state: State, fetch: Fetcher, now: datetime, report: Re
     return sorted(candidates.values(), key=lambda it: it.published or now, reverse=True)
 
 
-def run(cfg: Config, state: State, fetch: Fetcher, classifier: Classifier | None, enricher: Enricher | None,
-        sender: Sender, now: datetime | None = None) -> Report:
+def run(cfg: Config, state: State, store: EventStore, fetch: Fetcher, classifier: Classifier | None,
+        enricher: Enricher | None, sender: Sender, now: datetime | None = None) -> Report:
     now = (now or datetime.now(UTC)).astimezone(ZoneInfo(cfg.timezone))
     report = Report()
     candidates = collect(cfg, state, fetch, now, report)
@@ -113,17 +116,17 @@ def run(cfg: Config, state: State, fetch: Fetcher, classifier: Classifier | None
     report.candidates = len(candidates)
     if candidates and (classifier is None or enricher is None):
         report.errors.append("нет OPENAI_API_KEY — находки не оценены и подождут следующего запуска")
-        return _finish(cfg, state, now, report)
+        return _finish(cfg, state, store, now, report)
     assert classifier is not None and enricher is not None
 
-    ctx = _Ctx(cfg, state, enricher, sender, now, report)
+    ctx = _Ctx(cfg, state, store, enricher, sender, now, report)
     try:
         for start in range(0, len(candidates), cfg.llm.batch_size):
             batch = candidates[start: start + cfg.llm.batch_size]
             ids = [(f"n{start + i + 1}", it) for i, it in enumerate(batch)]
-            memory = state.recent_notified(now, cfg.filters.memory_days)
             try:
-                verdicts, tokens = classifier.classify(ids, memory, now, ctx.tokens_left())
+                verdicts, tokens = classifier.classify(ids, store.recent(cfg.filters.memory_events), now,
+                                                       ctx.tokens_left())
             except LLMError as e:
                 if isinstance(e, BudgetExceeded):
                     raise
@@ -135,7 +138,7 @@ def run(cfg: Config, state: State, fetch: Fetcher, classifier: Classifier | None
     except BudgetExceeded as e:
         report.errors.append(str(e))
         log.warning("%s — остальное подождёт следующего запуска", e)
-    return _finish(cfg, state, now, report)
+    return _finish(cfg, state, store, now, report)
 
 
 def _mark_seen(state: State, item: Item, now: datetime) -> None:
@@ -154,11 +157,13 @@ def _effective_rank(v: Verdict) -> str:
 class _Ctx:
     cfg: Config
     state: State
+    store: EventStore
     enricher: Enricher
     sender: Sender
     now: datetime
     report: Report
     enriched: int = 0
+    checked: set[str] = field(default_factory=set)  # события, которые уже сверили в этом запуске
 
     def _day(self) -> str:
         return self.now.astimezone(UTC).date().isoformat()
@@ -176,12 +181,10 @@ class _Ctx:
         for v in verdicts:
             self._handle(v, items[v.id], wanted, dropped)
 
-    def _is_duplicate(self, v: Verdict, wanted: set[str], dropped: set[str]) -> bool:
+    def _is_batch_duplicate(self, v: Verdict, wanted: set[str], dropped: set[str]) -> bool:
         ref = v.duplicate_of.strip()
         if not ref or ref == v.id:
             return False
-        if ref in {n.key for n in self.state.notified}:
-            return True
         if ref.startswith("n") and ref[1:].isdigit():
             # дубль находки этого же пакета — независимо от порядка: «оригинал» отправится сам,
             # если он подходит и сам не отброшен как дубль (так из пары взаимных ссылок останется одна)
@@ -189,9 +192,36 @@ class _Ctx:
         log.warning("непонятная ссылка на дубль %r — считаю дублем, как решила модель", ref)
         return True
 
-    def _handle(self, v: Verdict, item: Item, wanted: set[str], dropped: set[str]) -> bool:
-        """True — уведомление отправлено."""
-        cfg, state, now, report = self.cfg, self.state, self.now, self.report
+    def _enrich(self, v: Verdict, item: Item, previous: Event | None) -> Details | None:
+        """Подробности; None — не вышло (лимит, ошибка): находка подождёт следующего запуска."""
+        if self.enriched >= self.cfg.llm.enrich.max_per_run:
+            log.info("лимит подробностей за запуск — «%s» подождёт следующего запуска", item.title[:60])
+            return None
+        try:
+            details, tokens = self.enricher.enrich(item, v, previous, self.now, self.tokens_left())
+        except LLMError as e:
+            if isinstance(e, BudgetExceeded):
+                raise
+            self.report.errors.append(f"модель: {e}")
+            log.warning("подробности «%s»: %s", item.title[:60], e)
+            return None
+        self.enriched += 1
+        self.spend(tokens)
+        return details
+
+    def _send(self, text: str, silent: bool) -> bool:
+        try:
+            problems = self.sender.send(text, silent=silent)
+        except TelegramError as e:
+            self.report.errors.append(str(e))
+            log.warning("%s", e)
+            return False  # не помечаем просмотренным: попробуем в следующий запуск
+        # часть аккаунтов не получила — сообщаем, но не повторяем: остальным пришёл бы дубль
+        self.report.errors += [f"Telegram: {p}" for p in problems]
+        return True
+
+    def _handle(self, v: Verdict, item: Item, wanted: set[str], dropped: set[str]) -> None:
+        cfg, state, store, now, report = self.cfg, self.state, self.store, self.now, self.report
         rank = _effective_rank(v)
         log.info("[%s] %s — %s (%s)%s%s", rank, item.title[:80], v.reason, item.source,
                  f" дубль={v.duplicate_of}" if v.duplicate_of else "",
@@ -199,66 +229,95 @@ class _Ctx:
         if rank == "none" or rank not in cfg.filters.notify_ranks:
             report.skipped += 1
             _mark_seen(state, item, now)
-            return False
-        if self._is_duplicate(v, wanted, dropped):
+            return
+
+        # событие уже в базе: сверяем (если модель видит новое) или молча записываем ещё один источник
+        known = store.ids()
+        upd, dup = v.update_of.strip(), v.duplicate_of.strip()
+        event_id = upd if upd in known else dup if dup in known else ""
+        if event_id:
+            if event_id == upd and event_id not in self.checked:
+                self._check_update(v, item, event_id)
+            else:
+                report.duplicates += 1
+                store.add_source(event_id, item.key, item.link, item.title, "duplicate", now)
+                _mark_seen(state, item, now)
+            return
+        if self._is_batch_duplicate(v, wanted, dropped):
             report.duplicates += 1
             dropped.add(v.id)
             _mark_seen(state, item, now)
-            return False
-        if self.enriched >= cfg.llm.enrich.max_per_run:
-            log.info("лимит поиска подробностей за запуск — «%s» подождёт следующего запуска", item.title[:60])
-            return False
+            return
+        self._new_event(v, item, rank)
 
-        previous = next((n for n in state.notified if n.key == v.update_of.strip()), None) if v.update_of else None
-        try:
-            details, tokens = self.enricher.enrich(item, v, previous, now, self.tokens_left())
-        except LLMError as e:
-            if isinstance(e, BudgetExceeded):
-                raise
-            report.errors.append(f"модель: {e}")
-            log.warning("подробности «%s»: %s", item.title[:60], e)
-            return False  # не помечаем просмотренным: попробуем в следующий запуск
-        self.enriched += 1
-        self.spend(tokens)
+    def _new_event(self, v: Verdict, item: Item, rank: str) -> None:
+        cfg, state, now, report = self.cfg, self.state, self.now, self.report
+        details = self._enrich(v, item, None)
+        if details is None:
+            return
         if not details.found:
             log.info("   не подтвердилось — пропуск")
             report.skipped += 1
             _mark_seen(state, item, now)
-            return False
+            return
         if not details.has_dates:
             # «2027 год» — слишком размыто: пропускаем; когда объявят даты, придёт новая новость
             log.info("   нет чётких дат (%s: %s) — ждём, пока объявят", details.date_precision, details.dates_ru)
             report.no_dates += 1
             _mark_seen(state, item, now)
-            return False
+            return
         # открытие: end_date — день открытия; недавно открывшееся (до 2 недель) — всё ещё новость
         grace = timedelta(days=14) if v.category == "opening" else timedelta(0)
         if details.ended(now.date() - grace):
             log.info("   уже закончилось (%s) — пропуск", details.end_date)
             report.skipped += 1
             _mark_seen(state, item, now)
-            return False
-
+            return
         v = v.model_copy(update={"rank": rank})
-        try:
-            problems = self.sender.send(format_message(v, item, details, update=previous is not None),
-                                        silent=rank in cfg.filters.silent_ranks)
-        except TelegramError as e:
-            report.errors.append(str(e))
-            log.warning("%s", e)
-            return False  # не помечаем просмотренным: попробуем в следующий запуск
-        # часть аккаунтов не получила — сообщаем, но не повторяем: остальным пришёл бы дубль
-        report.errors += [f"Telegram: {p}" for p in problems]
+        if not self._send(format_message(v, item, details), silent=rank in cfg.filters.silent_ranks):
+            return
         _mark_seen(state, item, now)
-        state.notified.append(Notified(
-            key=item.key, rank=rank, title=details.title_ru or v.title_ru or item.title, when=details.dates_ru,
-            where=", ".join(x.name for x in details.venues[:3]), artist=v.artist,
-            at=now.isoformat(timespec="seconds")))
+        at = now.isoformat(timespec="seconds")
+        self.store.add(Event(
+            id=item.key, rank=rank, category=v.category, artist=v.artist,
+            title=details.title_ru or v.title_ru or item.title, dates_ru=details.dates_ru,
+            date_precision=details.date_precision, start_date=details.start_date, end_date=details.end_date,
+            price_ru=details.price_ru, is_free=details.is_free, status=details.status,
+            venues=[x.model_dump() for x in details.venues], official_url=details.official_url,
+            venue_url=details.venue_url, first_sent_at=at, updated_at=at))
+        self.store.add_source(item.key, item.key, item.link, item.title, "new", now)
         report.sent[rank] += 1
-        return True
+
+    def _check_update(self, v: Verdict, item: Item, event_id: str) -> None:
+        """Сверить новость с базой: изменились даты, цена, площадка, статус — 🔴 обновление."""
+        state, store, now, report = self.state, self.store, self.now, self.report
+        self.checked.add(event_id)
+        event = store.get(event_id)
+        assert event is not None
+        details = self._enrich(v, item, event)
+        if details is None:
+            return
+        new = details.model_dump()
+        changes = diff(event, new) if details.found else []
+        if not changes:
+            log.info("   нового по сравнению с базой нет — не присылаем")
+            report.duplicates += 1
+            if details.found:
+                store.apply(event_id, new, [], now)  # дозаполнить пустые поля (ссылки и т.п.)
+            store.add_source(event_id, item.key, item.link, item.title, "duplicate", now)
+            _mark_seen(state, item, now)
+            return
+        log.info("   🔴 обновление: %s", "; ".join(f"{c.label}: {c.old or '—'} → {c.new}" for c in changes))
+        if not self._send(format_update(event, v, item, details, changes), silent=False):
+            return
+        store.apply(event_id, new, changes, now)
+        store.add_source(event_id, item.key, item.link, item.title, "update", now)
+        _mark_seen(state, item, now)
+        report.updates += 1
 
 
-def _finish(cfg: Config, state: State, now: datetime, report: Report) -> Report:
+def _finish(cfg: Config, state: State, store: EventStore, now: datetime, report: Report) -> Report:
     state.prune(now, cfg.filters.seen_days, cfg.filters.memory_days)
+    store.prune(now.date())
     log.info("итог: %s", report.summary())
     return report

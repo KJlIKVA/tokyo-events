@@ -12,8 +12,8 @@ from typing import Any, Literal, Protocol
 from pydantic import BaseModel, ValidationError
 
 from .config import Config, LLMConfig, env
+from .events_db import Event
 from .sources import Item
-from .state import Notified
 
 log = logging.getLogger(__name__)
 
@@ -129,9 +129,15 @@ def describe_item(item_id: str, it: Item, now: datetime) -> str:
     return "\n".join(lines)
 
 
-def memory_lines(memory: list[Notified]) -> str:
-    return "\n".join(f"{n.key} | {n.rank} | {n.title} | {n.when or '?'} | {n.where or '?'}" for n in memory) \
-        or "(пока пусто)"
+STATUS_MARK = {"cancelled": " | ОТМЕНЕНО", "postponed": " | ПЕРЕНЕСЕНО"}
+
+
+def memory_lines(memory: list[Event]) -> str:
+    def price(e: Event) -> str:
+        return e.price_ru or ("бесплатно" if e.is_free else "?")
+
+    return "\n".join(f"{e.id} | {e.rank} | {e.title} | {e.dates_ru or '?'} | {e.where or '?'} | {price(e)}"
+                     f"{STATUS_MARK.get(e.status, '')}" for e in memory) or "(пока пусто)"
 
 
 @dataclass
@@ -139,7 +145,7 @@ class Classifier:
     cfg: Config
     transport: Transport
 
-    def build_prompt(self, items: list[tuple[str, Item]], memory: list[Notified], now: datetime) -> str:
+    def build_prompt(self, items: list[tuple[str, Item]], memory: list[Event], now: datetime) -> str:
         artists = "\n".join(f"- {a.name}: {a.about}" for a in self.cfg.artists)
         # replace, а не format: в шаблоне есть фигурные скобки JSON
         return (load_prompt("classify.txt").replace("{today}", f"{now:%Y-%m-%d}")
@@ -148,7 +154,7 @@ class Classifier:
                 .replace("{memory}", memory_lines(memory))
                 .replace("{items}", "\n\n".join(describe_item(i, it, now) for i, it in items)))
 
-    def classify(self, items: list[tuple[str, Item]], memory: list[Notified], now: datetime,
+    def classify(self, items: list[tuple[str, Item]], memory: list[Event], now: datetime,
                  tokens_left: int) -> tuple[list[Verdict], int]:
         """(вердикты по порядку items, потрачено токенов)."""
         prompt = self.build_prompt(items, memory, now)

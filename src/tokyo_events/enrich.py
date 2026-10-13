@@ -21,8 +21,8 @@ from pydantic import BaseModel, ValidationError
 from .article import Article, fetch_article, official_candidates
 from .classify import LLMError, Transport, Verdict, check_budget, describe_item, load_prompt, strict_object
 from .config import Config
+from .events_db import Event
 from .sources import USER_AGENT, Item
-from .state import Notified
 from .venue import VenueSites
 
 log = logging.getLogger(__name__)
@@ -44,7 +44,9 @@ class Details(BaseModel):
     title_ru: str
     dates_ru: str
     date_precision: Literal["exact", "approximate", "year_only", "unknown"]
+    start_date: str
     end_date: str
+    status: Literal["scheduled", "postponed", "cancelled"]
     price_ru: str
     is_free: bool
     venues: list[Venue]
@@ -75,7 +77,9 @@ def schema() -> dict[str, Any]:
         "title_ru": s,
         "dates_ru": s,
         "date_precision": {"type": "string", "enum": ["exact", "approximate", "year_only", "unknown"]},
+        "start_date": s,
         "end_date": s,
+        "status": {"type": "string", "enum": ["scheduled", "postponed", "cancelled"]},
         "price_ru": s,
         "is_free": {"type": "boolean"},
         "venues": {"type": "array", "items": venue},
@@ -111,12 +115,13 @@ class Enricher:
         if self.client is not None:
             self.venues = VenueSites(self.client)
 
-    def build_prompt(self, item: Item, v: Verdict, previous: Notified | None, now: datetime,
+    def build_prompt(self, item: Item, v: Verdict, previous: Event | None, now: datetime,
                      article: Article | None) -> str:
         artist_line = f"Артист: {v.artist}." if v.artist else ""
-        update_line = (f"Это ОБНОВЛЕНИЕ уже отправленного события: «{previous.title}» "
-                       f"(было: когда — {previous.when or '?'}, где — {previous.where or '?'}). "
-                       "В summary_ru напиши, что изменилось.") if previous else ""
+        update_line = (f"Возможно, это ОБНОВЛЕНИЕ уже отправленного события «{previous.title}». Что было известно: "
+                       f"когда — {previous.dates_ru or '?'}, где — {previous.where or '?'}, "
+                       f"цена — {previous.price_ru or ('бесплатно' if previous.is_free else '?')}. "
+                       "Заполни поля по статье как есть; в summary_ru — что нового.") if previous else ""
         if article and article.text:
             text = "\n".join(x for x in (article.title, article.description, article.text) if x)
         else:
@@ -128,7 +133,7 @@ class Enricher:
                 .replace("{update_line}", update_line)
                 .replace("{article}", text))
 
-    def enrich(self, item: Item, v: Verdict, previous: Notified | None, now: datetime,
+    def enrich(self, item: Item, v: Verdict, previous: Event | None, now: datetime,
                tokens_left: int) -> tuple[Details, int]:
         ec = self.cfg.llm.enrich
         article = fetch_article(item.link, self.client, ec.article_chars) if self.client is not None else None

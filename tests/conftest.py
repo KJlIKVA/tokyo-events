@@ -10,6 +10,7 @@ import pytest
 from tokyo_events.classify import Classifier, LLMError
 from tokyo_events.config import Config, load_config
 from tokyo_events.enrich import Enricher
+from tokyo_events.events_db import EventStore
 from tokyo_events.sources import Item
 from tokyo_events.telegram import PrintTelegram, TelegramError
 
@@ -49,7 +50,7 @@ def verdict(item_id: str, rank: str = "none", category: str = "other", artist: s
 
 def details(title_ru: str = "", **kw: Any) -> dict[str, Any]:
     d = {"found": True, "title_ru": title_ru, "dates_ru": "1–3 ноября 2026", "date_precision": "exact",
-         "end_date": "2026-11-03", "price_ru": "", "is_free": False,
+         "start_date": "2026-11-01", "end_date": "2026-11-03", "status": "scheduled", "price_ru": "", "is_free": False,
          "venues": [{"name": "代々木公園 (Yoyogi Park)", "address": "東京都渋谷区代々木神園町2-1", "area_ru": "Сибуя, Токио",
                      "on_map": True, "dates_ru": ""}],
          "summary_ru": "Описание."}
@@ -111,6 +112,11 @@ def classifier(cfg: Config, transport: FakeTransport) -> Classifier:
 @pytest.fixture
 def enricher(cfg: Config, transport: FakeTransport) -> Enricher:
     return Enricher(cfg, transport)
+
+
+@pytest.fixture
+def store() -> EventStore:
+    return EventStore(":memory:")
 
 
 @pytest.fixture
