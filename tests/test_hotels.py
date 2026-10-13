@@ -24,7 +24,7 @@ TODAY = date(2026, 10, 13)  # вторник
 NOW = datetime(2026, 10, 13, 9, 5, tzinfo=ZoneInfo("Asia/Tokyo"))
 
 
-def hotel(no, name, plans, review=4.4):
+def hotel(no, name, plans, review=4.4, min_charge=None):
     """Запись отеля в формате VacantHotelSearch: plans = [(price_total, dinner, breakfast, plan_name)]."""
     rooms = []
     for price, dinner, breakfast, plan in plans:
@@ -32,6 +32,7 @@ def hotel(no, name, plans, review=4.4):
                                         "reserveUrl": f"https://travel.rakuten.co.jp/{no}/{plan}"}})
         rooms.append({"dailyCharge": {"stayDate": "x", "rakutenCharge": price // 2, "total": price, "chargeFlag": 0}})
     return {"hotel": [{"hotelBasicInfo": {"hotelNo": no, "hotelName": name, "reviewAverage": review,
+                                          "hotelMinCharge": min_charge,
                                           "address1": "神奈川県", "address2": "足柄下郡箱根町湯本1",
                                           "planListUrl": f"https://hotel.travel.rakuten.co.jp/hotelinfo/plan/{no}"}},
                       {"roomInfo": rooms}]}
@@ -101,7 +102,7 @@ def test_ryokan_35k_to_10k_is_purple(cfg):
     text, silent = sender.sent[0]
     assert text.startswith("🟣 ♨️ −71% · <b>Рёкан Юмото</b> · Хаконэ-Юмото") and not silent
     assert "📅 сб 17 – вс 18 октября · 2 взрослых · ужин и завтрак" in text
-    assert "💴 10 000 ¥ за ночь вместо 35 000 ¥ (обычно в этот день недели) · −71%" in text
+    assert "💴 10 000 ¥ за ночь вместо 35 000 ¥ (самое дешёвое в другие недели) · −71%" in text
     assert "Забронировать на Rakuten Travel" in text and "google.com/maps" in text
 
 
@@ -310,3 +311,36 @@ def test_delayed_schedule_catches_up_once(cfg):
     calls = len(api.calls)
     run_hotels(cfg, api, store=store, now=NOW.replace(hour=17))
     assert len(api.calls) == calls
+
+
+def test_no_fake_deal_when_cheap_rooms_on_other_dates_sold_out(cfg):
+    """Урэсино 13.10.2026: на другие пятницы остался только люкс за 330 000 ¥, а минимум отеля — 9 900 ¥
+    с человека: 79 200 ¥ — не скидка. Настоящая скидка рядом с минимумом проходит."""
+    only(cfg, ("sat", 1))
+    offers = []
+    for d, price in ((SAT, 79200), (SAT + timedelta(weeks=1), 330000), (SAT + timedelta(weeks=2), 330000),
+                     (SAT + timedelta(weeks=3), 330000)):
+        offers += parse_offers([hotel(1, "Бэссо", [(price, 1, 1, "2食")], min_charge=9900)], "Урэсино",
+                               d.isoformat(), 1, 2, True)
+    alert = {(SAT.isoformat(), 1)}
+    db = EventStore(":memory:").db
+    from tokyo_events.hotels import SCHEMA
+    db.executescript(SCHEMA)
+    assert find_deals(db, offers, alert, cfg, TODAY) == []
+    for o in offers:
+        o.min_charge = 45000                       # минимум 45 000 ¥ с человека — 79 200 ¥ за двоих правда дёшево
+    assert [d.pct for d in find_deals(db, offers, alert, cfg, TODAY)] == [76]
+
+
+def test_usual_price_is_cheapest_other_week_not_median(cfg):
+    only(cfg, ("sat", 1))
+    prices = {SAT: 10000, SAT + timedelta(weeks=1): 20000, SAT + timedelta(weeks=2): 35000,
+              SAT + timedelta(weeks=3): 35000}
+    offers = [o for d, price in prices.items()
+              for o in parse_offers([hotel(1, "Рёкан", [(price, 1, 1, "2食")], min_charge=5000)], "Хаконэ",
+                                    d.isoformat(), 1, 2, True)]
+    db = EventStore(":memory:").db
+    from tokyo_events.hotels import SCHEMA
+    db.executescript(SCHEMA)
+    deals = find_deals(db, offers, {(SAT.isoformat(), 1)}, cfg, TODAY)
+    assert [(d.baseline, d.pct) for d in deals] == [(20000, 50)]

@@ -75,6 +75,7 @@ class Offer:
     url: str
     address: str = ""
     review: float | None = None
+    min_charge: int = 0      # hotelMinCharge: самая низкая цена отеля за человека (по данным Rakuten)
     raw: dict[str, Any] = field(default_factory=dict)
 
 
@@ -194,6 +195,7 @@ def parse_offers(hotels: list[dict], area: str, stay_date: str, nights: int, adu
                     url=plan.get("reserveUrl") or info.get("planListUrl") or info.get("hotelInformationUrl") or "",
                     address=f"{info.get('address1') or ''}{info.get('address2') or ''}",
                     review=float(info["reviewAverage"]) if info.get("reviewAverage") else None,
+                    min_charge=int(info.get("hotelMinCharge") or 0),
                     raw={k: charge.get(k) for k in ("rakutenCharge", "total", "chargeFlag")})
     return list(best.values())
 
@@ -213,8 +215,9 @@ def room_price(charge: dict, adults: int) -> int:
 # --- поиск скидок ---------------------------------------------------------------------------
 
 def find_deals(db: Any, offers: list[Offer], alert: set[tuple[str, int]], cfg: Config, today: date) -> list[Deal]:
-    """Скидки для дат из alert ((дата, ночей)): к обычной цене того же отеля (тот же день недели и число
-    ночей в другие недели) и к прошлым ценам на ту же дату."""
+    """Скидки для дат из alert ((дата, ночей)): к самой низкой цене того же отеля в тот же день недели и с тем же
+    числом ночей в другие недели и к прошлым ценам на ту же дату. И только если цена близка к самой низкой цене
+    отеля по Rakuten (hotelMinCharge), иначе это не скидка, а раскупленные дешёвые номера на другие даты."""
     h = cfg.hotels
     groups: dict[tuple[str, int, int], dict[str, Offer]] = {}
     for o in offers:
@@ -226,13 +229,18 @@ def find_deals(db: Any, offers: list[Offer], alert: set[tuple[str, int]], cfg: C
         for stay, o in dates.items():
             if (stay, o.nights) not in alert or (o.review is not None and o.review < h.min_review):
                 continue
+            if o.min_charge and o.price > h.max_vs_min_charge * o.min_charge * h.adults:
+                # цена далеко от самой низкой цены отеля: «скидка» только потому, что на другие даты дешёвые
+                # номера раскуплены и остались люксы (13.10.2026: 79 200 ¥ «вместо 330 000 ¥» при минимуме 9 900 ¥)
+                continue
             others = [x.price for d, x in dates.items() if d != stay]
             history = [r[0] for r in db.execute(
                 "SELECT price FROM hotel_prices WHERE hotel_no = ? AND stay_date = ? AND nights = ? "
                 "AND observed_at >= ?", (o.hotel_no, stay, o.nights, since))]
             candidates = []
             if len(others) >= h.min_compare:
-                candidates.append((int(statistics.median(others)), "usual"))
+                # самая низкая из других недель, не медиана: в сезон дальние даты раскуплены и медиана завышена
+                candidates.append((min(others), "usual"))
             if history:
                 candidates.append((int(statistics.median(history)), "history"))
             for baseline, basis in sorted(candidates, reverse=True):
@@ -274,7 +282,7 @@ def format_deal(deal: Deal, cfg: Config, two_meals: bool = True) -> str:
     head = "🔴 Ещё дешевле · " if deal.cheaper_again else f"{CIRCLES[deal.rank]} ♨️ −{deal.pct}% · "
     when = ("⚡ Сегодня, " if deal.today else "") + stay_ru(o.stay_date, o.nights)
     meals = "ужин и завтрак" if two_meals else "любой план"
-    basis = "обычно в этот день недели" if deal.basis == "usual" else "раньше на эту дату"
+    basis = "самое дешёвое в другие недели" if deal.basis == "usual" else "раньше на эту дату"
     per = " за первую ночь" if o.nights > 1 else " за ночь"
     maps = "https://www.google.com/maps/search/?" + urllib.parse.urlencode(
         {"api": "1", "query": f"{o.name} {o.address}".strip()})
