@@ -18,6 +18,7 @@ import httpx
 
 from .classify import Classifier, OpenAITransport, Verdict
 from .config import env, load_config, load_dotenv
+from .enrich import Details, Enricher, Venue
 from .pipeline import Report, collect, http_fetcher, run
 from .sources import Item
 from .state import State
@@ -39,10 +40,13 @@ def cmd_run(args: argparse.Namespace) -> int:
         print("::warning::Telegram не настроен (TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID) — запуск пропущен. "
               "Подключите бота: uv run tokyo-events setup-telegram")
         return 0
-    classifier = Classifier(cfg, OpenAITransport(cfg.llm)) if env("OPENAI_API_KEY") else None
     sender = PrintTelegram() if args.dry_run else _telegram()
     with httpx.Client(timeout=30) as client:
-        report = run(cfg, state, http_fetcher(client), classifier, sender)
+        classifier = enricher = None
+        if env("OPENAI_API_KEY"):
+            transport = OpenAITransport(cfg.llm)
+            classifier, enricher = Classifier(cfg, transport), Enricher(cfg, transport, client)
+        report = run(cfg, state, http_fetcher(client), classifier, enricher, sender)
     if args.dry_run:
         print("dry-run: состояние не сохранено, в Telegram ничего не отправлено")
     else:
@@ -89,19 +93,31 @@ def cmd_sources(args: argparse.Namespace) -> int:
 
 def cmd_test_telegram(args: argparse.Namespace) -> int:
     tg = _telegram()
+    ueno = Venue(name="上野の森美術館 (Ueno Royal Museum)", address="東京都台東区上野公園1-2", dates_ru="")
     samples = [
-        ("green", "festival", "", "Осенний фестиваль роз в саду Кюфурукава", "до 31 октября", "Кита, Токио",
-         "Сотни сортов роз у старинного особняка, вход в сад платный."),
-        ("orange", "exhibition", "", "Выставка Ван Гога", "пример", "Музей в Уэно",
-         "Так будет выглядеть оранжевое уведомление — интереснее обычного."),
-        ("purple", "concert", "Ado", "Ado — новый тур", "пример", "Tokyo Dome",
-         "Так будет выглядеть фиолетовое уведомление: концерт любимого артиста или событие масштаба страны."),
+        ("green", "festival", "", Details(
+            found=True, title_ru="Пример: осенний фестиваль в парке", dates_ru="1–3 ноября 2026, 10:00–17:00",
+            date_precision="exact", end_date="", price_ru="", is_free=True, official_url="",
+            venues=[Venue(name="代々木公園 (Yoyogi Park)", address="東京都渋谷区代々木神園町2-1", dates_ru="")],
+            summary_ru="Так выглядит зелёное уведомление: обычное событие, приходит без звука.")),
+        ("orange", "exhibition", "", Details(
+            found=True, title_ru="Пример: выставка с картиной Ван Гога", dates_ru="10 октября 2026 – 10 января 2027",
+            date_precision="exact", end_date="", price_ru="взрослые 2 400 ¥", is_free=False,
+            official_url="https://www.cincinnati-art2026.jp/", venues=[ueno],
+            summary_ru="Так выглядит оранжевое уведомление: интереснее обычного.")),
+        ("purple", "concert", "Ado", Details(
+            found=True, title_ru="Пример: тур Ado", dates_ru="март 2027", date_precision="approximate",
+            end_date="", price_ru="", is_free=False, official_url="",
+            venues=[Venue(name="東京ドーム (Tokyo Dome)", address="東京都文京区後楽1-3-61", dates_ru="11–12 марта"),
+                    Venue(name="京セラドーム大阪 (Kyocera Dome Osaka)", address="大阪市西区千代崎3-中2-1",
+                          dates_ru="25–26 марта")],
+            summary_ru="Так выглядит фиолетовое уведомление: концерт любимого артиста или событие масштаба страны.")),
     ]
-    for rank, cat, artist, title, when, where, summary in samples:
-        v = Verdict(id="t", relevant=True, rank=rank, category=cat, artist=artist, duplicate_of="", title_ru=title,  # type: ignore[arg-type]
-                    when_ru=when, where_ru=where, summary_ru=summary, reason="тест")
-        text = "Тест Tokyo Events\n\n" + format_message(v, Item(source="test", title=title, link="https://github.com"))
-        for problem in tg.send(text, silent=rank == "green"):
+    for rank, cat, artist, details in samples:
+        v = Verdict(id="t", relevant=True, rank=rank, category=cat, artist=artist, duplicate_of="",  # type: ignore[arg-type]
+                    update_of="", title_ru=details.title_ru, reason="тест")
+        item = Item(source="test", title=details.title_ru, link="https://github.com/KJlIKVA/tokyo-events")
+        for problem in tg.send("Тест Tokyo Events\n\n" + format_message(v, item, details), silent=rank == "green"):
             print("  не дошло:", problem)
     print(f"Отправлено 3 тестовых сообщения в {len(tg.chat_ids)} чат(а)")
     return 0

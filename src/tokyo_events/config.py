@@ -22,15 +22,29 @@ class Price(BaseModel):
     output: float
 
 
+Effort = Literal["minimal", "low", "medium", "high"]
+
+
+class EnrichConfig(BaseModel):
+    """Шаг 2: по каждому отобранному событию модель ищет в интернете даты, цену, место и официальный сайт."""
+    effort: Effort = "low"
+    max_output_tokens: int = 12000
+    search_context_size: Literal["low", "medium", "high"] = "medium"
+    reserve_search_tokens: int = 40000  # сколько входных токенов закладывать в бюджет на результаты поиска
+    max_per_run: int = 20
+    price_per_search: float = 0.01      # USD за один поиск — только для отчёта о расходах в логе
+
+
 class LLMConfig(BaseModel):
     model: str
-    effort: Literal["minimal", "low", "medium", "high"] = "low"
+    effort: Effort = "low"
     max_output_tokens: int = 16000
     batch_size: int = 20
     max_items_per_run: int = 120
     daily_token_limit: int = 1_000_000
     request_timeout_s: float = 180
     price_per_1m: Price | None = None
+    enrich: EnrichConfig = EnrichConfig()
 
     @model_validator(mode="after")
     def _only_allowed_model(self) -> LLMConfig:

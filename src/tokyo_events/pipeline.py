@@ -1,4 +1,4 @@
-"""Один запуск: собрать → отсеять старое и уже виденное → оценить моделью → отправить в Telegram."""
+"""Один запуск: собрать → отсеять старое и виденное → отобрать моделью → найти подробности → в Telegram."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ import httpx
 
 from .classify import BudgetExceeded, Classifier, LLMError, Verdict
 from .config import Config, Source
+from .enrich import Enricher
 from .sources import Item, artist_matcher, fetch_source, mentions_artist
 from .state import Notified, State
 from .telegram import TelegramError, format_message
@@ -36,12 +37,14 @@ class Report:
     sent: dict[str, int] = field(default_factory=lambda: {"green": 0, "orange": 0, "purple": 0})
     skipped: int = 0
     duplicates: int = 0
+    no_dates: int = 0
     errors: list[str] = field(default_factory=list)
 
     def summary(self) -> str:
         sent = ", ".join(f"{k}={v}" for k, v in self.sent.items())
         return (f"собрано {self.fetched}, новых {self.new}, на оценку {self.candidates}; отправлено: {sent}; "
-                f"не событие/не подходит: {self.skipped}, дублей: {self.duplicates}; ошибок: {len(self.errors)}")
+                f"не событие/не подходит: {self.skipped}, дублей: {self.duplicates}, без чётких дат: {self.no_dates}; "
+                f"ошибок: {len(self.errors)}")
 
 
 def http_fetcher(client: httpx.Client) -> Fetcher:
@@ -98,8 +101,8 @@ def collect(cfg: Config, state: State, fetch: Fetcher, now: datetime, report: Re
     return sorted(candidates.values(), key=lambda it: it.published or now, reverse=True)
 
 
-def run(cfg: Config, state: State, fetch: Fetcher, classifier: Classifier | None, sender: Sender,
-        now: datetime | None = None) -> Report:
+def run(cfg: Config, state: State, fetch: Fetcher, classifier: Classifier | None, enricher: Enricher | None,
+        sender: Sender, now: datetime | None = None) -> Report:
     now = (now or datetime.now(UTC)).astimezone(ZoneInfo(cfg.timezone))
     report = Report()
     candidates = collect(cfg, state, fetch, now, report)
@@ -108,33 +111,30 @@ def run(cfg: Config, state: State, fetch: Fetcher, classifier: Classifier | None
                  len(candidates), cfg.llm.max_items_per_run)
         candidates = candidates[: cfg.llm.max_items_per_run]
     report.candidates = len(candidates)
-    if candidates and classifier is None:
+    if candidates and (classifier is None or enricher is None):
         report.errors.append("нет OPENAI_API_KEY — находки не оценены и подождут следующего запуска")
         return _finish(cfg, state, now, report)
+    assert classifier is not None and enricher is not None
 
-    for start in range(0, len(candidates), cfg.llm.batch_size):
-        batch = candidates[start: start + cfg.llm.batch_size]
-        ids = [(f"n{start + i + 1}", it) for i, it in enumerate(batch)]
-        memory = state.recent_notified(now, cfg.filters.memory_days)
-        day = now.astimezone(UTC).date().isoformat()
-        assert classifier is not None
-        try:
-            verdicts, tokens = classifier.classify(ids, memory, now,
-                                                   cfg.llm.daily_token_limit - state.tokens_on(day))
-        except BudgetExceeded as e:
-            report.errors.append(str(e))
-            log.warning("%s — остальное подождёт следующего запуска", e)
-            break
-        except LLMError as e:
-            report.errors.append(f"модель: {e}")
-            log.warning("модель: %s", e)
-            continue
-        state.add_tokens(day, tokens)
-        items = dict(ids)
-        sent_in_batch: set[str] = set()  # id находок этого пакета, которые ушли в Telegram
-        for v in verdicts:
-            if _handle(cfg, state, v, items[v.id], sender, now, report, sent_in_batch):
-                sent_in_batch.add(v.id)
+    ctx = _Ctx(cfg, state, enricher, sender, now, report)
+    try:
+        for start in range(0, len(candidates), cfg.llm.batch_size):
+            batch = candidates[start: start + cfg.llm.batch_size]
+            ids = [(f"n{start + i + 1}", it) for i, it in enumerate(batch)]
+            memory = state.recent_notified(now, cfg.filters.memory_days)
+            try:
+                verdicts, tokens = classifier.classify(ids, memory, now, ctx.tokens_left())
+            except LLMError as e:
+                if isinstance(e, BudgetExceeded):
+                    raise
+                report.errors.append(f"модель: {e}")
+                log.warning("модель: %s", e)
+                continue
+            ctx.spend(tokens)
+            ctx.handle_batch(verdicts, dict(ids))
+    except BudgetExceeded as e:
+        report.errors.append(str(e))
+        log.warning("%s — остальное подождёт следующего запуска", e)
     return _finish(cfg, state, now, report)
 
 
@@ -150,35 +150,112 @@ def _effective_rank(v: Verdict) -> str:
     return v.rank if v.relevant else "none"
 
 
-def _handle(cfg: Config, state: State, v: Verdict, item: Item, sender: Sender, now: datetime, report: Report,
-            sent_in_batch: set[str]) -> bool:
-    """True — уведомление отправлено."""
-    rank = _effective_rank(v)
-    log.info("[%s] %s — %s (%s)", rank, item.title[:80], v.reason, item.source)
-    if rank == "none" or rank not in cfg.filters.notify_ranks:
-        report.skipped += 1
+@dataclass
+class _Ctx:
+    cfg: Config
+    state: State
+    enricher: Enricher
+    sender: Sender
+    now: datetime
+    report: Report
+    enriched: int = 0
+
+    def _day(self) -> str:
+        return self.now.astimezone(UTC).date().isoformat()
+
+    def tokens_left(self) -> int:
+        return self.cfg.llm.daily_token_limit - self.state.tokens_on(self._day())
+
+    def spend(self, tokens: int) -> None:
+        self.state.add_tokens(self._day(), tokens)
+
+    def handle_batch(self, verdicts: list[Verdict], items: dict[str, Item]) -> None:
+        notify = set(self.cfg.filters.notify_ranks)
+        wanted = {v.id for v in verdicts if _effective_rank(v) in notify}
+        dropped: set[str] = set()  # id находок пакета, отброшенных как дубли
+        for v in verdicts:
+            self._handle(v, items[v.id], wanted, dropped)
+
+    def _is_duplicate(self, v: Verdict, wanted: set[str], dropped: set[str]) -> bool:
+        ref = v.duplicate_of.strip()
+        if not ref or ref == v.id:
+            return False
+        if ref in {n.key for n in self.state.notified}:
+            return True
+        if ref.startswith("n") and ref[1:].isdigit():
+            # дубль находки этого же пакета — независимо от порядка: «оригинал» отправится сам,
+            # если он подходит и сам не отброшен как дубль (так из пары взаимных ссылок останется одна)
+            return ref in wanted and ref not in dropped
+        log.warning("непонятная ссылка на дубль %r — считаю дублем, как решила модель", ref)
+        return True
+
+    def _handle(self, v: Verdict, item: Item, wanted: set[str], dropped: set[str]) -> bool:
+        """True — уведомление отправлено."""
+        cfg, state, now, report = self.cfg, self.state, self.now, self.report
+        rank = _effective_rank(v)
+        log.info("[%s] %s — %s (%s)%s%s", rank, item.title[:80], v.reason, item.source,
+                 f" дубль={v.duplicate_of}" if v.duplicate_of else "",
+                 f" обновление={v.update_of}" if v.update_of else "")
+        if rank == "none" or rank not in cfg.filters.notify_ranks:
+            report.skipped += 1
+            _mark_seen(state, item, now)
+            return False
+        if self._is_duplicate(v, wanted, dropped):
+            report.duplicates += 1
+            dropped.add(v.id)
+            _mark_seen(state, item, now)
+            return False
+        if self.enriched >= cfg.llm.enrich.max_per_run:
+            log.info("лимит поиска подробностей за запуск — «%s» подождёт следующего запуска", item.title[:60])
+            return False
+
+        previous = next((n for n in state.notified if n.key == v.update_of.strip()), None) if v.update_of else None
+        try:
+            details, tokens = self.enricher.enrich(item, v, previous, now, self.tokens_left())
+        except LLMError as e:
+            if isinstance(e, BudgetExceeded):
+                raise
+            report.errors.append(f"модель: {e}")
+            log.warning("подробности «%s»: %s", item.title[:60], e)
+            return False  # не помечаем просмотренным: попробуем в следующий запуск
+        self.enriched += 1
+        self.spend(tokens)
+        if not details.found:
+            log.info("   не подтвердилось — пропуск")
+            report.skipped += 1
+            _mark_seen(state, item, now)
+            return False
+        if not details.has_dates:
+            # «2027 год» — слишком размыто: пропускаем; когда объявят даты, придёт новая новость
+            log.info("   нет чётких дат (%s: %s) — ждём, пока объявят", details.date_precision, details.dates_ru)
+            report.no_dates += 1
+            _mark_seen(state, item, now)
+            return False
+        # открытие: end_date — день открытия; недавно открывшееся (до 2 недель) — всё ещё новость
+        grace = timedelta(days=14) if v.category == "opening" else timedelta(0)
+        if details.ended(now.date() - grace):
+            log.info("   уже закончилось (%s) — пропуск", details.end_date)
+            report.skipped += 1
+            _mark_seen(state, item, now)
+            return False
+
+        v = v.model_copy(update={"rank": rank})
+        try:
+            problems = self.sender.send(format_message(v, item, details, update=previous is not None),
+                                        silent=rank in cfg.filters.silent_ranks)
+        except TelegramError as e:
+            report.errors.append(str(e))
+            log.warning("%s", e)
+            return False  # не помечаем просмотренным: попробуем в следующий запуск
+        # часть аккаунтов не получила — сообщаем, но не повторяем: остальным пришёл бы дубль
+        report.errors += [f"Telegram: {p}" for p in problems]
         _mark_seen(state, item, now)
-        return False
-    # дубль считается, только если «оригинал» действительно ушёл в Telegram (раньше или в этом пакете)
-    if v.duplicate_of and (v.duplicate_of in {n.key for n in state.notified} or v.duplicate_of in sent_in_batch):
-        report.duplicates += 1
-        _mark_seen(state, item, now)
-        return False
-    v = v.model_copy(update={"rank": rank})
-    try:
-        problems = sender.send(format_message(v, item), silent=rank in cfg.filters.silent_ranks)
-    except TelegramError as e:
-        # не помечаем просмотренным: попробуем в следующий запуск
-        report.errors.append(str(e))
-        log.warning("%s", e)
-        return False
-    # часть аккаунтов не получила — сообщаем, но не повторяем: остальным пришёл бы дубль
-    report.errors += [f"Telegram: {p}" for p in problems]
-    _mark_seen(state, item, now)
-    state.notified.append(Notified(key=item.key, rank=rank, title=v.title_ru or item.title, when=v.when_ru,
-                                   where=v.where_ru, artist=v.artist, at=now.isoformat(timespec="seconds")))
-    report.sent[rank] += 1
-    return True
+        state.notified.append(Notified(
+            key=item.key, rank=rank, title=details.title_ru or v.title_ru or item.title, when=details.dates_ru,
+            where=", ".join(x.name for x in details.venues[:3]), artist=v.artist,
+            at=now.isoformat(timespec="seconds")))
+        report.sent[rank] += 1
+        return True
 
 
 def _finish(cfg: Config, state: State, now: datetime, report: Report) -> Report:

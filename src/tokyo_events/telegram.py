@@ -10,6 +10,7 @@ import urllib.parse
 import httpx
 
 from .classify import Verdict
+from .enrich import Details, maps_url
 from .sources import Item
 
 log = logging.getLogger(__name__)
@@ -30,19 +31,35 @@ def source_name(item: Item) -> str:
     return "Google Новости" if host == "news.google.com" else host.removeprefix("www.")
 
 
-def format_message(v: Verdict, item: Item) -> str:
+def _a(url: str, text: str) -> str:
+    return f'<a href="{html.escape(url, quote=True)}">{html.escape(text)}</a>'
+
+
+def format_message(v: Verdict, item: Item, d: Details, update: bool = False) -> str:
+    """Событие: ранг и название, даты, цена, место со ссылкой на Google Maps, официальный сайт, описание."""
     e = html.escape
-    lines = [f"{CIRCLES[v.rank]} <b>{e(v.title_ru or item.title)}</b>"]
-    if v.when_ru:
-        lines.append(f"📅 {e(v.when_ru)}")
-    if v.where_ru:
-        lines.append(f"📍 {e(v.where_ru)}")
-    if v.summary_ru:
-        lines += ["", e(v.summary_ru)]
+    title = e(d.title_ru or v.title_ru or item.title)
+    lines = [f"{CIRCLES[v.rank]} {'🔄 Обновление: ' if update else ''}<b>{title}</b>"]
+    lines.append(f"📅 {e(d.dates_ru)}")
+    if d.is_free:
+        lines.append("💴 Бесплатно" + (f" ({e(d.price_ru)})" if d.price_ru and "бесплат" not in d.price_ru.lower()
+                                      else ""))
+    else:
+        lines.append(f"💴 {e(d.price_ru)}" if d.price_ru else "💴 Цена пока не объявлена")
+    for venue in d.venues:
+        place = _a(maps_url(venue), venue.name)
+        lines.append(f"🗺 {place}" + (f" — {e(venue.dates_ru)}" if venue.dates_ru else ""))
+    if d.official_url:
+        lines.append(f"🌐 {_a(d.official_url, 'Официальный сайт')}")
+    else:
+        # официальный сайт не нашёлся — хоть что-то, откуда узнать подробности
+        lines.append(f"🔗 {_a(item.link, f'Подробнее: {source_name(item)}')}")
+    if d.summary_ru:
+        lines += ["", e(d.summary_ru)]
     tags = " ".join(t for t in (CATEGORY_TAGS.get(v.category, ""),
                                 f"#{v.artist.replace(' ', '_')}" if v.artist else "") if t)
-    link = f'<a href="{e(item.link, quote=True)}">{e(source_name(item))}</a>'
-    lines += ["", f"{link}  {tags}" if tags else link]
+    if tags:
+        lines += ["", tags]
     return "\n".join(lines)
 
 

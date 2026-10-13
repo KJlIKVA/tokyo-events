@@ -5,6 +5,7 @@ from datetime import timedelta
 
 from tokyo_events.classify import Verdict, schema
 from tokyo_events.config import Source
+from tokyo_events.enrich import Details, Venue
 from tokyo_events.sources import google_news_url, normalize_title, parse_feed, parse_page
 from tokyo_events.state import Notified, State
 from tokyo_events.telegram import format_message
@@ -57,21 +58,57 @@ def test_normalize_title():
     assert normalize_title("画像29 / 45＞「グランスタ東京」がオープン！(1/5) - ウォーカープラス") == "「グランスタ東京」がオープン！"
 
 
-def test_format_message_escapes_and_links():
-    v = Verdict(id="n1", relevant=True, rank="purple", category="concert", artist="美波", duplicate_of="",
-                title_ru="美波 — тур <Timesick Traveler 2027>", when_ru="январь 2027", where_ru="Япония и Азия",
-                summary_ru="3 концерта в Японии & 5 городов Азии.", reason="")
-    text = format_message(v, item("x", link="https://www.373official.com/posts/1?a=1&b=2"))
+def _v(rank="purple", category="concert", artist="美波"):
+    return Verdict(id="n1", relevant=True, rank=rank, category=category, artist=artist, duplicate_of="",
+                   update_of="", title_ru="", reason="")
+
+
+def _d(**kw):
+    base = dict(found=True, title_ru="美波 — тур <Timesick Traveler 2027>", dates_ru="январь 2027",
+                date_precision="approximate", end_date="", price_ru="", is_free=False,
+                venues=[], official_url="https://www.373official.com/posts/1?a=1&b=2",
+                summary_ru="3 концерта в Японии & 5 городов Азии.")
+    base.update(kw)
+    return Details(**base)
+
+
+def test_format_message_full_event():
+    d = _d(venues=[Venue(name="上野の森美術館 (Ueno Royal Museum)", address="東京都台東区上野公園1-2", dates_ru="")],
+           price_ru="взрослые 2 400 ¥", dates_ru="10 октября 2026 – 10 января 2027", title_ru="Ван Гог в Уэно")
+    text = format_message(_v("orange", "exhibition", ""), item("x", link="https://news.google.com/rss/articles/a"), d)
+    lines = text.splitlines()
+    assert lines[0] == "🟠 <b>Ван Гог в Уэно</b>"
+    assert lines[1] == "📅 10 октября 2026 – 10 января 2027"
+    assert lines[2] == "💴 взрослые 2 400 ¥"
+    assert lines[3] == ('🗺 <a href="https://www.google.com/maps/search/?api=1&amp;query='
+                        '%E4%B8%8A%E9%87%8E%E3%81%AE%E6%A3%AE%E7%BE%8E%E8%A1%93%E9%A4%A8+%28Ueno+Royal+Museum%29+'
+                        '%E6%9D%B1%E4%BA%AC%E9%83%BD%E5%8F%B0%E6%9D%B1%E5%8C%BA%E4%B8%8A%E9%87%8E%E5%85%AC%E5%9C%921-2">'
+                        '上野の森美術館 (Ueno Royal Museum)</a>')
+    assert lines[4] == '🌐 <a href="https://www.373official.com/posts/1?a=1&amp;b=2">Официальный сайт</a>'
+    assert "news.google.com" not in text  # ссылки на новость нет, когда есть официальный сайт
+    assert text.endswith("#выставка")
+
+
+def test_format_message_escapes_free_tour_and_tags():
+    d = _d(is_free=True, venues=[Venue(name="Tokyo Dome", address="", dates_ru="11 марта"),
+                                 Venue(name="Osaka-jo Hall", address="", dates_ru="20 марта")])
+    text = format_message(_v(), item("x"), d)
     assert text.splitlines()[0] == "🟣 <b>美波 — тур &lt;Timesick Traveler 2027&gt;</b>"
-    assert "📅 январь 2027" in text and "📍 Япония и Азия" in text and "&amp; 5 городов" in text
-    assert '<a href="https://www.373official.com/posts/1?a=1&amp;b=2">373official.com</a>  #концерт #美波' in text
+    assert "💴 Бесплатно" in text and "&amp; 5 городов" in text
+    assert "query=Tokyo+Dome\">Tokyo Dome</a> — 11 марта" in text and "Osaka-jo Hall</a> — 20 марта" in text
+    assert text.endswith("#концерт #美波")
 
 
-def test_format_message_without_optional_fields():
-    v = Verdict(id="n1", relevant=True, rank="green", category="other", artist="", duplicate_of="",
-                title_ru="", when_ru="", where_ru="", summary_ru="", reason="")
-    text = format_message(v, item("Оригинальный заголовок", link="https://news.google.com/rss/articles/abc"))
-    assert text == '🟢 <b>Оригинальный заголовок</b>\n\n<a href="https://news.google.com/rss/articles/abc">Google Новости</a>'
+def test_format_message_unknown_price_and_no_official_site():
+    d = _d(official_url="", title_ru="")
+    text = format_message(_v("green", "other", ""), item("Оригинальный заголовок", link="https://example.com/n"), d)
+    assert text.splitlines()[0] == "🟢 <b>Оригинальный заголовок</b>"
+    assert "💴 Цена пока не объявлена" in text
+    assert '🔗 <a href="https://example.com/n">Подробнее: example.com</a>' in text
+
+
+def test_format_message_update():
+    assert format_message(_v(), item("x"), _d(), update=True).startswith("🟣 🔄 Обновление: <b>")
 
 
 def test_state_roundtrip_and_prune(tmp_path):
@@ -164,14 +201,13 @@ def test_only_terra_model_is_allowed(cfg):
         LLMConfig(model="gpt-5.6-luna")
 
 
-def test_google_news_outlet_is_shown_instead_of_google():
+def test_google_news_outlet_is_used_when_no_official_site():
     rss = """<?xml version="1.0"?><rss version="2.0"><channel><title>t</title>
 <item><title>ゴッホ展 - 美術手帖</title><link>https://news.google.com/rss/articles/abc</link>
 <source url="https://bijutsutecho.com">美術手帖</source></item></channel></rss>""".encode()
     it = parse_feed(Source(id="gn", kind="google_news", q="x"), rss)[0]
-    v = Verdict(id="n1", relevant=True, rank="orange", category="exhibition", artist="", duplicate_of="",
-                title_ru="Ван Гог", when_ru="", where_ru="", summary_ru="", reason="")
-    assert '<a href="https://news.google.com/rss/articles/abc">美術手帖</a>' in format_message(v, it)
+    assert '<a href="https://news.google.com/rss/articles/abc">Подробнее: 美術手帖</a>' in \
+        format_message(_v("orange", "exhibition", ""), it, _d(official_url=""))
 
 
 def test_run_is_skipped_until_telegram_is_configured(monkeypatch, tmp_path, capsys):

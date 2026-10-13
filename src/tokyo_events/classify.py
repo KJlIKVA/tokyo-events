@@ -1,4 +1,4 @@
-"""Оценка находок моделью: событие или нет, ранг, дубль, текст уведомления по-русски."""
+"""Шаг 1 — оценка находок моделью по заголовкам: событие или нет, ранг, дубль или обновление."""
 
 from __future__ import annotations
 
@@ -27,10 +27,8 @@ class Verdict(BaseModel):
     category: Literal["concert", "exhibition", "festival", "opening", "big_event", "other"]
     artist: str
     duplicate_of: str
+    update_of: str
     title_ru: str
-    when_ru: str
-    where_ru: str
-    summary_ru: str
     reason: str
 
 
@@ -38,20 +36,24 @@ class Batch(BaseModel):
     items: list[Verdict]
 
 
+def strict_object(props: dict[str, Any]) -> dict[str, Any]:
+    return {"type": "object", "additionalProperties": False, "properties": props, "required": list(props)}
+
+
 def schema(artist_names: list[str]) -> dict[str, Any]:
     s = {"type": "string"}
-    props: dict[str, Any] = {
+    verdict = strict_object({
         "id": s,
         "relevant": {"type": "boolean"},
         "rank": {"type": "string", "enum": ["green", "orange", "purple", "none"]},
         "category": {"type": "string", "enum": CATEGORIES},
         "artist": {"type": "string", "enum": ["", *artist_names]},
         "duplicate_of": s,
-        "title_ru": s, "when_ru": s, "where_ru": s, "summary_ru": s, "reason": s,
-    }
-    verdict = {"type": "object", "additionalProperties": False, "properties": props, "required": list(props)}
-    return {"type": "object", "additionalProperties": False,
-            "properties": {"items": {"type": "array", "items": verdict}}, "required": ["items"]}
+        "update_of": s,
+        "title_ru": s,
+        "reason": s,
+    })
+    return strict_object({"items": {"type": "array", "items": verdict}})
 
 
 class LLMError(RuntimeError):
@@ -63,12 +65,13 @@ class BudgetExceeded(LLMError):
 
 
 class Transport(Protocol):
-    def __call__(self, prompt: str, schema: dict[str, Any]) -> tuple[str, int]:
+    def __call__(self, prompt: str, schema: dict[str, Any], *, effort: str, max_output_tokens: int,
+                 web_search: bool = False) -> tuple[str, int]:
         """(JSON-текст ответа, всего токенов). Бросает LLMError."""
 
 
 class OpenAITransport:
-    """OpenAI Responses API со Structured Outputs."""
+    """OpenAI Responses API со Structured Outputs; при web_search модель может искать в интернете."""
 
     def __init__(self, cfg: LLMConfig) -> None:
         from openai import OpenAI
@@ -77,17 +80,23 @@ class OpenAITransport:
         self.client = OpenAI(api_key=env("OPENAI_API_KEY", required=True), timeout=cfg.request_timeout_s,
                              max_retries=2)
 
-    def __call__(self, prompt: str, schema: dict[str, Any]) -> tuple[str, int]:
+    def __call__(self, prompt: str, schema: dict[str, Any], *, effort: str, max_output_tokens: int,
+                 web_search: bool = False) -> tuple[str, int]:
         import openai
 
+        kwargs: dict[str, Any] = {}
+        if web_search:
+            kwargs["tools"] = [{"type": "web_search", "search_context_size": self.cfg.enrich.search_context_size,
+                                "user_location": {"type": "approximate", "country": "JP", "city": "Tokyo"}}]
         try:
             resp = self.client.responses.create(
                 model=self.cfg.model,
                 input=prompt,
-                reasoning={"effort": self.cfg.effort},
-                max_output_tokens=self.cfg.max_output_tokens,
+                reasoning={"effort": effort},
+                max_output_tokens=max_output_tokens,
                 store=False,
                 text={"format": {"type": "json_schema", "name": "tokyo_events", "schema": schema, "strict": True}},
+                **kwargs,
             )
         except openai.OpenAIError as e:
             raise LLMError(f"{type(e).__name__}: {str(e)[:300]}") from e
@@ -95,13 +104,43 @@ class OpenAITransport:
         inp = getattr(u, "input_tokens", 0) or 0
         cached = getattr(getattr(u, "input_tokens_details", None), "cached_tokens", 0) or 0
         out = getattr(u, "output_tokens", 0) or 0
+        searches = sum(1 for o in resp.output if getattr(o, "type", "") == "web_search_call")
         if self.cfg.price_per_1m:
             p = self.cfg.price_per_1m
             cost = ((inp - cached) * p.input + cached * (p.cached_input or p.input) + out * p.output) / 1e6
-            log.info("модель: вход %d (кэш %d), выход %d токенов ≈ $%.4f", inp, cached, out, cost)
+            cost += searches * self.cfg.enrich.price_per_search
+            log.info("модель: вход %d (кэш %d), выход %d токенов, поисков %d ≈ $%.4f", inp, cached, out, searches,
+                     cost)
         if resp.status != "completed":
             raise LLMError(f"ответ не завершён: {resp.status} {getattr(resp, 'incomplete_details', None)}")
         return resp.output_text, inp + out
+
+
+def check_budget(prompt: str, max_output_tokens: int, tokens_left: int, extra: int = 0) -> None:
+    """Верхняя оценка вызова: вход ≈ байты/2 + выход + extra (результаты поиска). Не влезает — не вызываем."""
+    reserve = len(prompt.encode("utf-8")) // 2 + max_output_tokens + extra
+    if reserve > tokens_left:
+        raise BudgetExceeded(f"дневной лимит токенов: осталось {tokens_left:,}, вызов может занять до {reserve:,}")
+
+
+def load_prompt(name: str) -> str:
+    return resources.files("tokyo_events").joinpath(f"prompts/{name}").read_text(encoding="utf-8")
+
+
+def describe_item(item_id: str, it: Item, now: datetime) -> str:
+    lines = [f"id: {item_id}", f"заголовок: {it.title}"]
+    if it.summary and it.summary != it.title:
+        lines.append(f"текст: {it.summary}")
+    if it.published:
+        lines.append(f"опубликовано: {it.published.astimezone(now.tzinfo):%Y-%m-%d %H:%M}")
+    if it.artist:
+        lines.append(f"официальный источник: {it.artist}")
+    return "\n".join(lines)
+
+
+def memory_lines(memory: list[Notified]) -> str:
+    return "\n".join(f"{n.key} | {n.rank} | {n.title} | {n.when or '?'} | {n.where or '?'}" for n in memory) \
+        or "(пока пусто)"
 
 
 @dataclass
@@ -110,40 +149,26 @@ class Classifier:
     transport: Transport
 
     def build_prompt(self, items: list[tuple[str, Item]], memory: list[Notified], now: datetime) -> str:
-        template = resources.files("tokyo_events").joinpath("prompts/classify.txt").read_text(encoding="utf-8")
         artists = "\n".join(f"- {a.name}: {a.about}" for a in self.cfg.artists)
-        mem = "\n".join(f"{n.key} | {n.rank} | {n.title} | {n.when or '?'} | {n.where or '?'}" for n in memory) \
-            or "(пока пусто)"
-        blocks = []
-        for item_id, it in items:
-            lines = [f"id: {item_id}", f"заголовок: {it.title}"]
-            if it.summary and it.summary != it.title:
-                lines.append(f"текст: {it.summary}")
-            if it.published:
-                lines.append(f"опубликовано: {it.published.astimezone(now.tzinfo):%Y-%m-%d %H:%M}")
-            if it.artist:
-                lines.append(f"официальный источник: {it.artist}")
-            blocks.append("\n".join(lines))
         # replace, а не format: в шаблоне есть фигурные скобки JSON
-        return (template.replace("{today}", f"{now:%Y-%m-%d}")
+        return (load_prompt("classify.txt").replace("{today}", f"{now:%Y-%m-%d}")
                 .replace("{area}", self.cfg.area)
                 .replace("{artists}", artists)
-                .replace("{memory}", mem)
-                .replace("{items}", "\n\n".join(blocks)))
+                .replace("{memory}", memory_lines(memory))
+                .replace("{items}", "\n\n".join(describe_item(i, it, now) for i, it in items)))
 
     def classify(self, items: list[tuple[str, Item]], memory: list[Notified], now: datetime,
                  tokens_left: int) -> tuple[list[Verdict], int]:
         """(вердикты по порядку items, потрачено токенов)."""
         prompt = self.build_prompt(items, memory, now)
-        reserve = len(prompt.encode("utf-8")) // 2 + self.cfg.llm.max_output_tokens
-        if reserve > tokens_left:
-            raise BudgetExceeded(f"дневной лимит токенов: осталось {tokens_left:,}, вызов может занять до {reserve:,}")
-        text, tokens = self.transport(prompt, schema([a.name for a in self.cfg.artists]))
+        check_budget(prompt, self.cfg.llm.max_output_tokens, tokens_left)
+        text, tokens = self.transport(prompt, schema([a.name for a in self.cfg.artists]),
+                                      effort=self.cfg.llm.effort, max_output_tokens=self.cfg.llm.max_output_tokens)
         try:
             batch = Batch.model_validate(json.loads(text))
         except (json.JSONDecodeError, ValidationError) as e:
             raise LLMError(f"ответ модели не прошёл проверку: {str(e)[:300]}") from e
-        by_id = {v.id: v for v in batch.items}
+        by_id = {v.id.strip(): v for v in batch.items}
         missing = [i for i, _ in items if i not in by_id]
         if missing:
             log.warning("модель не вернула вердикт для %s — разберём в следующий раз", missing)

@@ -14,6 +14,15 @@ llm:
   request_timeout_s: 180
   # для отчёта о расходах в логах (USD за 1M токенов)
   price_per_1m: {input: 2.50, cached_input: 0.25, output: 15.00}
+  # Шаг 2: по каждому отобранному событию модель ищет в интернете точные даты, цену, место и официальный сайт.
+  # Без чётких дат (только «2027 год») уведомление не отправляется — придёт, когда даты объявят.
+  enrich:
+    effort: low
+    max_output_tokens: 12000
+    search_context_size: medium
+    reserve_search_tokens: 40000   # сколько закладывать в дневной лимит на результаты поиска
+    max_per_run: 20                # больше за запуск не ищем: остальное — в следующий раз
+    price_per_search: 0.01         # USD за поиск — только для отчёта в логах
 
 filters:
   max_age_hours: 72            # находки старше этого молча помечаются просмотренными (не уведомляем о старом)
@@ -75,9 +84,10 @@ sources:
     artist: ヨルシカ
 
   # --- артисты: музыкальные новости (у Ado и YOASOBI нет ленты на сайте) ---
-  - id: natalie_music
-    kind: rss
-    url: https://natalie.mu/music/feed/news
+  # natalie.mu напрямую не отдаёт ленту серверам GitHub (405) — читаем его через Google Новости
+  - id: gn_natalie_artists
+    kind: google_news
+    q: 'site:natalie.mu (Ado OR YOASOBI OR RADWIMPS OR ヨルシカ OR 美波) when:3d'
     artists_only: true
   - id: gn_artists_live
     kind: google_news
