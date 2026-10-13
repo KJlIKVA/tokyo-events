@@ -76,15 +76,17 @@ def test_format_message_full_event():
     d = _d(venues=[Venue(name="上野の森美術館 (Ueno Royal Museum)", address="東京都台東区上野公園1-2", dates_ru="")],
            price_ru="взрослые 2 400 ¥", dates_ru="10 октября 2026 – 10 января 2027", title_ru="Ван Гог в Уэно")
     text = format_message(_v("orange", "exhibition", ""), item("x", link="https://news.google.com/rss/articles/a"), d)
-    lines = text.splitlines()
-    assert lines[0] == "🟠 <b>Ван Гог в Уэно</b>"
-    assert lines[1] == "📅 10 октября 2026 – 10 января 2027"
-    assert lines[2] == "💴 взрослые 2 400 ¥"
-    assert lines[3] == ('🗺 <a href="https://www.google.com/maps/search/?api=1&amp;query='
+    blocks = text.split("\n\n")  # между частями — пустая строка
+    assert blocks[0] == "🟠 <b>Ван Гог в Уэно</b>"
+    assert blocks[1] == "📅 10 октября 2026 – 10 января 2027"
+    assert blocks[2] == "💴 взрослые 2 400 ¥"
+    assert blocks[3] == ('🗺 <a href="https://www.google.com/maps/search/?api=1&amp;query='
                         '%E4%B8%8A%E9%87%8E%E3%81%AE%E6%A3%AE%E7%BE%8E%E8%A1%93%E9%A4%A8+%28Ueno+Royal+Museum%29+'
                         '%E6%9D%B1%E4%BA%AC%E9%83%BD%E5%8F%B0%E6%9D%B1%E5%8C%BA%E4%B8%8A%E9%87%8E%E5%85%AC%E5%9C%921-2">'
                         '上野の森美術館 (Ueno Royal Museum)</a>')
-    assert lines[4] == '🌐 <a href="https://www.373official.com/posts/1?a=1&amp;b=2">Официальный сайт</a>'
+    assert blocks[4] == '🌐 <a href="https://www.373official.com/posts/1?a=1&amp;b=2">Официальный сайт</a>'
+    assert blocks[5] == "3 концерта в Японии &amp; 5 городов Азии." and blocks[6] == "#выставка"
+    assert "\n\n\n" not in text
     assert "news.google.com" not in text  # ссылки на новость нет, когда есть официальный сайт
     assert text.endswith("#выставка")
 
@@ -95,7 +97,7 @@ def test_format_message_escapes_free_tour_and_tags():
     text = format_message(_v(), item("x"), d)
     assert text.splitlines()[0] == "🟣 <b>美波 — тур &lt;Timesick Traveler 2027&gt;</b>"
     assert "💴 Бесплатно" in text and "&amp; 5 городов" in text
-    assert "query=Tokyo+Dome\">Tokyo Dome</a> — 11 марта" in text and "Osaka-jo Hall</a> — 20 марта" in text
+    assert "query=Tokyo+Dome\">Tokyo Dome</a> — 11 марта\n🗺 " in text and "Osaka-jo Hall</a> — 20 марта" in text
     assert text.endswith("#концерт #美波")
 
 

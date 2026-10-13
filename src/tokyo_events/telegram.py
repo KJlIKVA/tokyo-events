@@ -37,31 +37,32 @@ def _a(url: str, text: str) -> str:
 
 
 def format_message(v: Verdict, item: Item, d: Details, update: bool = False) -> str:
-    """Событие: ранг и название, даты, цена, место со ссылкой на Google Maps, официальный сайт, описание."""
+    """Событие: ранг и название, даты, цена, место со ссылкой на Google Maps, официальный сайт, описание.
+    Между частями — пустая строка (просьба пользователя: сплошняком читается плохо)."""
     e = html.escape
     title = e(d.title_ru or v.title_ru or item.title)
-    lines = [f"{CIRCLES[v.rank]} {'🔄 Обновление: ' if update else ''}<b>{title}</b>"]
-    lines.append(f"📅 {e(d.dates_ru)}")
+    blocks = [f"{CIRCLES[v.rank]} {'🔄 Обновление: ' if update else ''}<b>{title}</b>", f"📅 {e(d.dates_ru)}"]
     if d.is_free:
-        lines.append("💴 Бесплатно" + (f" ({e(d.price_ru)})" if d.price_ru and "бесплат" not in d.price_ru.lower()
-                                      else ""))
+        blocks.append("💴 Бесплатно" + (f" ({e(d.price_ru)})" if d.price_ru and "бесплат" not in d.price_ru.lower()
+                                       else ""))
     else:
-        lines.append(f"💴 {e(d.price_ru)}" if d.price_ru else "💴 Цена пока не объявлена")
-    for venue in d.venues:
-        place = _a(maps_url(venue), venue.name)
-        lines.append(f"🗺 {place}" + (f" — {e(venue.dates_ru)}" if venue.dates_ru else ""))
+        blocks.append(f"💴 {e(d.price_ru)}" if d.price_ru else "💴 Цена пока не объявлена")
+    if d.venues:
+        # площадки тура — одним блоком, по строке на каждую
+        blocks.append("\n".join(f"🗺 {_a(maps_url(x), x.name)}" + (f" — {e(x.dates_ru)}" if x.dates_ru else "")
+                                for x in d.venues))
     if d.official_url:
-        lines.append(f"🌐 {_a(d.official_url, 'Официальный сайт')}")
+        blocks.append(f"🌐 {_a(d.official_url, 'Официальный сайт')}")
     else:
         # официальный сайт не нашёлся — хоть что-то, откуда узнать подробности
-        lines.append(f"🔗 {_a(item.link, f'Подробнее: {source_name(item)}')}")
+        blocks.append(f"🔗 {_a(item.link, f'Подробнее: {source_name(item)}')}")
     if d.summary_ru:
-        lines += ["", e(d.summary_ru)]
+        blocks.append(e(d.summary_ru))
     tags = " ".join(t for t in (CATEGORY_TAGS.get(v.category, ""),
                                 f"#{v.artist.replace(' ', '_')}" if v.artist else "") if t)
     if tags:
-        lines += ["", tags]
-    return "\n".join(lines)
+        blocks.append(tags)
+    return "\n\n".join(blocks)
 
 
 def parse_chat_ids(raw: str) -> list[str]:
