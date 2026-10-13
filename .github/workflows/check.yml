@@ -29,7 +29,7 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60  # с проверкой цен отелей (~55 мест × 13 дат, раз в секунду) — до ~20 минут
     permissions:
       contents: read
     steps:
@@ -50,7 +50,7 @@ jobs:
         run: scripts/state.sh pull
 
       - name: Проверить события
-        timeout-minutes: 20
+        timeout-minutes: 50
         env:
           DRY_RUN: ${{ inputs.dry_run && '--dry-run' || '' }}
           HOTELS_NOW: ${{ inputs.hotels_now && '--hotels-now' || '' }}

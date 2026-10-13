@@ -75,22 +75,31 @@ class HotelArea(BaseModel):
     lon: float
     radius_km: float = 3.0   # API: 0.1–3.0
     onsen: bool = True       # только с горячими источниками
+    meals: Literal["two_meals", "any"] | None = None  # None — как в hotels.meals (в городах обычно any)
+
+
+class Stay(BaseModel):
+    """Вариант заезда: день недели (или today — день в день) и сколько ночей."""
+    checkin: Literal["today", "mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+    nights: int = 1
 
 
 class Hotels(BaseModel):
     """Цены отелей и рёканов через API 楽天トラベル: скидки к обычной цене. Пороги и цвета — как у deals."""
     enabled: bool = True
-    run_at_hours: list[int] = [9, 19]   # по Токио; в другие запуски цены не проверяются
+    run_at_hours: list[int] = [9, 15, 19]   # по Токио; в другие запуски цены не проверяются
+    origin: str = ""              # сайт, указанный в приложении Rakuten (заголовок Origin)
     adults: int = 2
-    nights: int = 1
     meals: Literal["two_meals", "any"] = "two_meals"
-    weekends_ahead: int = 6       # сколько ближайших суббот брать для сравнения
-    alert_weekends: int = 3       # о скидках сообщать для ближайших N суббот
-    min_compare: int = 2          # сколько других выходных нужно, чтобы считать «обычную цену»
+    stays: list[Stay] = [Stay(checkin="fri", nights=1), Stay(checkin="sat", nights=1),
+                         Stay(checkin="fri", nights=2), Stay(checkin="today", nights=1)]
+    weeks_ahead: int = 4          # цены на столько недель вперёд — из них «обычная цена»
+    alert_weeks: int = 2          # о скидках сообщать на ближайшие N недель («сегодня» — только сегодня)
+    min_compare: int = 2          # сколько других недель нужно, чтобы считать «обычную цену»
     history_days: int = 21
     min_saving_yen: int = 3000
     min_review: float = 3.5
-    max_alerts_per_run: int = 5
+    max_alerts_per_run: int = 8
     areas: list[HotelArea] = []
 
 

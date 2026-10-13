@@ -46,26 +46,87 @@ deals:
 # Работает, только если заданы RAKUTEN_APPLICATION_ID и RAKUTEN_ACCESS_KEY (uv run tokyo-events setup-rakuten).
 hotels:
   enabled: true
-  run_at_hours: [9, 19]        # по Токио — дважды в день, чтобы не дёргать API каждые 2 часа
+  run_at_hours: [9, 15, 19]    # по Токио — трижды в день (в 15 и 19 — ради «день в день»)
+  origin: https://kjlikva.github.io   # этот сайт указывается в приложении Rakuten как «разрешённый»
   adults: 2
-  nights: 1
   meals: two_meals             # two_meals — ужин и завтрак (как обычно у рёканов); any — любой план
-  weekends_ahead: 6            # цены на 6 ближайших суббот — из них «обычная цена»
-  alert_weekends: 3            # о скидках сообщать на 3 ближайшие субботы
+  stays:                       # варианты заезда
+    - {checkin: fri, nights: 1}      # пятница вечером, 1 ночь
+    - {checkin: sat, nights: 1}      # суббота, 1 ночь
+    - {checkin: fri, nights: 2}      # пятница – воскресенье
+    - {checkin: today, nights: 1}    # день в день
+  weeks_ahead: 4               # цены на 4 недели вперёд — из них «обычная цена»
+  alert_weeks: 2               # о скидках сообщать на 2 ближайшие недели («сегодня» — только сегодня)
   min_saving_yen: 3000         # и экономия не меньше 3 000 ¥
   min_review: 3.5              # отели с рейтингом ниже не присылать
-  max_alerts_per_run: 5
-  areas:                       # центр онсэн-городка; радиус до 3 км
+  max_alerts_per_run: 8
+  areas:                       # центр места; радиус до 3 км. onsen: false — без фильтра «онсэн»; meals: any — любой план
+    # Хоккайдо
+    - {name: Ноборибэцу, lat: 42.4960, lon: 141.1450}
+    - {name: Дзёдзанкэй, lat: 42.9680, lon: 141.1610}
+    - {name: Хакодатэ-Юнокава, lat: 41.7780, lon: 140.7890}
+    - {name: Тояко, lat: 42.5650, lon: 140.8190}
+    - {name: Нисэко, lat: 42.8600, lon: 140.6980, onsen: false, meals: any}
+    - {name: Саппоро, lat: 43.0621, lon: 141.3544, onsen: false, meals: any}
+    # Тохоку
+    - {name: Гиндзан, lat: 38.5700, lon: 140.5300}
+    - {name: Дзао, lat: 38.1670, lon: 140.3980}
+    - {name: Акиу, lat: 38.2280, lon: 140.7230}
+    - {name: Наруко, lat: 38.7400, lon: 140.7200}
+    - {name: Нюто, lat: 39.8030, lon: 140.7920}
+    # Канто и Идзу
     - {name: Хаконэ-Юмото, lat: 35.2329, lon: 139.1067}
     - {name: Хаконэ-Гора, lat: 35.2483, lon: 139.0469}
     - {name: Атами, lat: 35.0965, lon: 139.0717}
-    - {name: Ито, lat: 34.9658, lon: 139.1020}
-    - {name: Сюдзэндзи, lat: 34.9703, lon: 138.9306}
     - {name: Югавара, lat: 35.1386, lon: 139.0828}
+    - {name: Ито, lat: 34.9658, lon: 139.1020}
+    - {name: Атагава, lat: 34.8160, lon: 139.0700}
+    - {name: Симода, lat: 34.6790, lon: 138.9450}
+    - {name: Сюдзэндзи, lat: 34.9703, lon: 138.9306}
     - {name: Кусацу, lat: 36.6227, lon: 138.5966}
     - {name: Икахо, lat: 36.4975, lon: 138.9203}
+    - {name: Минаками, lat: 36.7880, lon: 138.9700}
     - {name: Киногава, lat: 36.8237, lon: 139.7124}
+    - {name: Никко, lat: 36.7480, lon: 139.6190}
+    - {name: Насу, lat: 37.0905, lon: 139.9850}
+    - {name: Каруидзава, lat: 36.3420, lon: 138.6350, onsen: false, meals: any}
     - {name: Кавагутико, lat: 35.5016, lon: 138.7656}
+    - {name: Камакура, lat: 35.3190, lon: 139.5500, onsen: false, meals: any}
+    # Тюбу
+    - {name: Гэро, lat: 35.8060, lon: 137.2440}
+    - {name: Такаяма, lat: 36.1410, lon: 137.2520, onsen: false, meals: any}
+    - {name: Окухида, lat: 36.1950, lon: 137.5600}
+    - {name: Яманака, lat: 36.2470, lon: 136.3740}
+    - {name: Вакура, lat: 37.0910, lon: 136.9150}
+    - {name: Канадзава, lat: 36.5780, lon: 136.6480, onsen: false, meals: any}
+    - {name: Сибу-Юданака, lat: 36.7330, lon: 138.4290}
+    - {name: Нодзава, lat: 36.9230, lon: 138.4470}
+    - {name: Хакуба, lat: 36.6980, lon: 137.8620, onsen: false, meals: any}
+    - {name: Мацумото, lat: 36.2380, lon: 137.9720, onsen: false, meals: any}
+    # Кансай
+    - {name: Арима, lat: 34.7970, lon: 135.2480}
+    - {name: Киносаки, lat: 35.6260, lon: 134.8100}
+    - {name: Сирахама, lat: 33.6800, lon: 135.3480}
+    - {name: Киото, lat: 35.0040, lon: 135.7680, onsen: false, meals: any}
+    - {name: Нара, lat: 34.6850, lon: 135.8050, onsen: false, meals: any}
+    - {name: Осака, lat: 34.7025, lon: 135.4959, onsen: false, meals: any}
+    # Тюгоку и Сикоку
+    - {name: Дого, lat: 33.8520, lon: 132.7860}
+    - {name: Тамацукури, lat: 35.4180, lon: 133.0100}
+    - {name: Мисаса, lat: 35.4090, lon: 133.8650}
+    - {name: Хиросима, lat: 34.3950, lon: 132.4590, onsen: false, meals: any}
+    # Кюсю
+    - {name: Бэппу, lat: 33.2840, lon: 131.4910}
+    - {name: Юфуин, lat: 33.2650, lon: 131.3550}
+    - {name: Курокава, lat: 33.0770, lon: 131.1430}
+    - {name: Ибусуки, lat: 31.2370, lon: 130.6400}
+    - {name: Урэсино, lat: 33.1000, lon: 129.9900}
+    - {name: Ундзэн, lat: 32.7440, lon: 130.2630}
+    - {name: Кирисима, lat: 31.8600, lon: 130.8700}
+    - {name: Фукуока, lat: 33.5900, lon: 130.4200, onsen: false, meals: any}
+    # Окинава
+    - {name: Наха, lat: 26.2150, lon: 127.6870, onsen: false, meals: any}
+    - {name: Онна, lat: 26.4970, lon: 127.8530, onsen: false, meals: any}
 
 # Город для 🟢 и 🟠. 🟣 «грандиозные события» — по всей Японии.
 area: "Токио (23 района и район Тама)"

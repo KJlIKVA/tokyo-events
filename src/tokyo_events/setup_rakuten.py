@@ -12,16 +12,31 @@ from pathlib import Path
 
 import httpx
 
-from .config import HotelArea
+from .config import HotelArea, load_config
 from .hotels import Rakuten, RakutenError, saturdays
 from .setup_telegram import github_repo, set_github_secret, update_env
 
-STEPS = """\
+
+def _origin() -> str:
+    try:
+        return load_config().hotels.origin or DEFAULT_ORIGIN
+    except OSError:
+        return DEFAULT_ORIGIN
+
+
+DEFAULT_ORIGIN = "https://kjlikva.github.io"
+ORIGIN = _origin()
+
+STEPS = f"""\
 Ключи 楽天トラベル (бесплатно) — для цен отелей и рёканов
 
 1) Откройте https://webservice.rakuten.co.jp/ и войдите аккаунтом Rakuten (楽天会員, можно завести бесплатно).
-2) «アプリID発行» / «New App»: название — «Tokyo Events», тип — Web / backend (сервер).
-   Адрес сайта можно указать https://github.com/KJlIKVA/tokyo-events
+2) Создайте приложение («アプリID発行» / «New App»):
+   • название — Tokyo Events, тип — Web Application;
+   • адрес приложения (URL) — https://github.com/KJlIKVA/tokyo-events;
+   • разрешённый сайт (許可されたWebサイト / Allowed websites) — {ORIGIN.removeprefix("https://")}
+     (бот отправляет запросы от его имени);
+   • ожидаемое число запросов в секунду (QPS) — 1.
 3) На странице приложения скопируйте:
    • アプリケーションID (Application ID)
    • アクセスキー (Access Key)
@@ -32,12 +47,17 @@ TEST_AREA = HotelArea(name="Хаконэ-Юмото", lat=35.2329, lon=139.1067)
 
 def check_keys(app_id: str, access_key: str, client: httpx.Client) -> str | None:
     """Пробный запрос цен в Хаконэ на ближайшую субботу. None — ключи работают."""
-    api = Rakuten(app_id, access_key, client, pause_s=0)
+    api = Rakuten(app_id, access_key, client, origin=ORIGIN, pause_s=0)
     try:
         api.search(TEST_AREA, saturdays(date.today(), 1)[0], adults=2, nights=1)
     except RakutenError as e:
         text = str(e)
-        if text.startswith(("400", "401", "403")):
+        if "access key" in text.lower() or "applicationid" in text.lower().replace(" ", ""):
+            return f"Rakuten не принял ключи: {text}"
+        if text.startswith("403"):
+            return (f"Rakuten не пустил запрос: {text}. Проверьте, что в приложении разрешённый сайт — "
+                    f"{ORIGIN.removeprefix('https://')}")
+        if text.startswith(("400", "401")):
             return f"Rakuten не принял ключи: {text}"
         return f"Не удалось проверить: {text}"
     return None

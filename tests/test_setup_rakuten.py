@@ -5,12 +5,12 @@ import httpx
 from tokyo_events import setup_rakuten
 
 
-def fake(monkeypatch, status, inputs, keys, repo=False):
+def fake(monkeypatch, status, inputs, keys, repo=False, message="Invalid Access Key"):
     real = httpx.Client
     monkeypatch.setattr(setup_rakuten.httpx, "Client",
                         lambda **kw: real(transport=httpx.MockTransport(
                             lambda r: httpx.Response(status, json={"hotels": []} if status == 200 else
-                                                     {"error": "wrong_parameter", "error_description": "invalid"}))))
+                                                     {"errors": {"errorCode": status, "errorMessage": message}}))))
     inputs, keys = list(inputs), list(keys)
     monkeypatch.setattr("builtins.input", lambda prompt="": inputs.pop(0))
     monkeypatch.setattr(setup_rakuten.getpass, "getpass", lambda prompt: keys.pop(0))
@@ -37,3 +37,9 @@ def test_rejected_keys_not_saved(tmp_path, monkeypatch, capsys):
     fake(monkeypatch, 400, ["1", "1", "1"], ["K", "K", "K"])
     assert setup_rakuten.main(tmp_path / ".env") == 1
     assert not (tmp_path / ".env").exists() and "не принял ключи" in capsys.readouterr().out
+
+
+def test_forbidden_origin_hint(monkeypatch):
+    fake(monkeypatch, 403, [], [], message="Origin not allowed")
+    problem = setup_rakuten.check_keys("1", "K", setup_rakuten.httpx.Client())
+    assert "разрешённый сайт — kjlikva.github.io" in problem
