@@ -150,19 +150,22 @@ def cmd_test_telegram(args: argparse.Namespace) -> int:
     samples = [
         ("green", "festival", "", Details(
             found=True, title_ru="Пример: осенний фестиваль в парке", dates_ru="1–3 ноября 2026, 10:00–17:00",
-            date_precision="exact", start_date="", end_date="", status="scheduled", price_ru="", is_free=True,
+            date_precision="exact", start_date="", end_date="", status="scheduled", location="tokyo",
+            price_ru="", is_free=True,
             official_url="",
             venues=[Venue(name="代々木公園 (Yoyogi Park)", address="東京都渋谷区代々木神園町2-1", dates_ru="")],
             summary_ru="Так выглядит зелёное уведомление: обычное событие, приходит без звука.")),
         ("orange", "exhibition", "", Details(
             found=True, title_ru="Пример: выставка с картиной Ван Гога", dates_ru="10 октября 2026 – 10 января 2027",
-            date_precision="exact", start_date="", end_date="", status="scheduled", price_ru="взрослые 2 400 ¥",
+            date_precision="exact", start_date="", end_date="", status="scheduled", location="tokyo",
+            price_ru="взрослые 2 400 ¥",
             is_free=False,
             official_url="https://www.cincinnati-art2026.jp/", venues=[ueno],
             summary_ru="Так выглядит оранжевое уведомление: интереснее обычного.")),
         ("purple", "concert", "Ado", Details(
             found=True, title_ru="Пример: тур Ado", dates_ru="март 2027", date_precision="approximate",
-            start_date="", end_date="", status="scheduled", price_ru="", is_free=False, official_url="",
+            start_date="", end_date="", status="scheduled", location="tokyo",
+            price_ru="", is_free=False, official_url="",
             venues=[Venue(name="東京ドーム (Tokyo Dome)", address="東京都文京区後楽1-3-61", dates_ru="11–12 марта"),
                     Venue(name="京セラドーム大阪 (Kyocera Dome Osaka)", address="大阪市西区千代崎3-中2-1",
                           dates_ru="25–26 марта")],

@@ -364,3 +364,22 @@ def test_recent_opening_is_still_news(cfg, store, classifier, enricher, transpor
                                                 item("Старое открытие", source="gn_tokyo_openings", hours_ago=2)]})
     report = run(cfg, ready(cfg), store, fetch, classifier, enricher, sender, now=NOW)
     assert report.sent["green"] == 1 and report.skipped == 1
+
+
+def test_location_rules(cfg, store, classifier, enricher, transport, sender):
+    transport.rules = {
+        "Чемпионат мира в Шанхае": {"rank": "purple", "category": "big_event"},
+        "Экспо в Осаке": {"rank": "purple", "category": "big_event"},
+        "Фестиваль в Иокогаме": {"rank": "green", "category": "festival"},
+        "Ado тур в Сеуле": {"rank": "purple", "category": "concert", "artist": "Ado"},
+    }
+    transport.details = {"Чемпионат мира в Шанхае": details(location="abroad"),
+                         "Экспо в Осаке": details(location="japan"),
+                         "Фестиваль в Иокогаме": details(location="japan"),
+                         "Ado тур в Сеуле": details(location="abroad")}
+    fetch = FakeFetcher({"gn_japan_big": [item(t, source="gn_japan_big", hours_ago=1 + i / 10)
+                                          for i, t in enumerate(transport.rules)]})
+    report = run(cfg, ready(cfg), store, fetch, classifier, enricher, sender, now=NOW)
+    # 🟣 за масштаб — Япония да, заграница нет; 🟢 — только Токио; концерт своего артиста — где угодно
+    assert report.sent == {"green": 0, "orange": 0, "purple": 2} and report.skipped == 2
+    assert {e.title for e in store.recent()} == {"Экспо в Осаке", "Ado тур в Сеуле"}

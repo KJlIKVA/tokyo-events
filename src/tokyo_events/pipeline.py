@@ -153,6 +153,16 @@ def _effective_rank(v: Verdict) -> str:
     return v.rank if v.relevant else "none"
 
 
+def _location_ok(v: Verdict, rank: str, location: str) -> bool:
+    """Правило пользователя: 🟢 и 🟠 — только Токио; 🟣 за масштаб — вся Япония;
+    концерты своих артистов — где угодно."""
+    if v.artist and v.category == "concert":
+        return True
+    if rank == "purple":
+        return location in ("tokyo", "japan", "unknown")
+    return location in ("tokyo", "unknown")
+
+
 @dataclass
 class _Ctx:
     cfg: Config
@@ -264,6 +274,12 @@ class _Ctx:
             # «2027 год» — слишком размыто: пропускаем; когда объявят даты, придёт новая новость
             log.info("   нет чётких дат (%s: %s) — ждём, пока объявят", details.date_precision, details.dates_ru)
             report.no_dates += 1
+            _mark_seen(state, item, now)
+            return
+        where_ok = _location_ok(v, rank, details.location)
+        if not where_ok:
+            log.info("   не то место для ранга %s (%s) — пропуск", rank, details.location)
+            report.skipped += 1
             _mark_seen(state, item, now)
             return
         # открытие: end_date — день открытия; недавно открывшееся (до 2 недель) — всё ещё новость

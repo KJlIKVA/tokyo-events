@@ -65,7 +65,8 @@ def _v(rank="purple", category="concert", artist="美波"):
 
 def _d(**kw):
     base = dict(found=True, title_ru="美波 — тур <Timesick Traveler 2027>", dates_ru="январь 2027",
-                date_precision="approximate", start_date="", end_date="", status="scheduled", price_ru="",
+                date_precision="approximate", start_date="", end_date="", status="scheduled", location="tokyo",
+                price_ru="",
                 is_free=False,
                 venues=[], official_url="https://www.373official.com/posts/1?a=1&b=2",
                 summary_ru="3 концерта в Японии & 5 городов Азии.")

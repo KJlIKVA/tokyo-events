@@ -47,6 +47,7 @@ class Details(BaseModel):
     start_date: str
     end_date: str
     status: Literal["scheduled", "postponed", "cancelled"]
+    location: Literal["tokyo", "japan", "abroad", "online", "unknown"]
     price_ru: str
     is_free: bool
     venues: list[Venue]
@@ -80,6 +81,7 @@ def schema() -> dict[str, Any]:
         "start_date": s,
         "end_date": s,
         "status": {"type": "string", "enum": ["scheduled", "postponed", "cancelled"]},
+        "location": {"type": "string", "enum": ["tokyo", "japan", "abroad", "online", "unknown"]},
         "price_ru": s,
         "is_free": {"type": "boolean"},
         "venues": {"type": "array", "items": venue},
