@@ -17,7 +17,7 @@ on:
         type: boolean
         default: false
       hotels_now:
-        description: "проверить цены отелей сейчас (обычно — в 9 и 19 ч по Токио)"
+        description: "проверить цены отелей сейчас (обычно — в 9, 15 и 19 ч по Токио)"
         type: boolean
         default: false
 

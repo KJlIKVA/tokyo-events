@@ -46,7 +46,7 @@ deals:
 # Работает, только если заданы RAKUTEN_APPLICATION_ID и RAKUTEN_ACCESS_KEY (uv run tokyo-events setup-rakuten).
 hotels:
   enabled: true
-  run_at_hours: [9, 15, 19]    # по Токио — трижды в день (в 15 и 19 — ради «день в день»)
+  run_at_hours: [9, 15, 19]    # по Токио — трижды в день (в 15 и 19 — ради «день в день»); GitHub опоздал — в следующий запуск
   origin: https://kjlikva.github.io   # этот сайт указывается в приложении Rakuten как «разрешённый»
   adults: 2
   meals: two_meals             # two_meals — ужин и завтрак (как обычно у рёканов); any — любой план

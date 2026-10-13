@@ -12,6 +12,7 @@ from __future__ import annotations
 import html
 import json
 import logging
+import sqlite3
 import statistics
 import time
 import urllib.parse
@@ -302,6 +303,17 @@ class HotelReport:
     errors: list[str] = field(default_factory=list)
 
 
+def hotels_due(db: sqlite3.Connection, now: datetime, hours: list[int]) -> bool:
+    """Настал час из run_at_hours, а с этого часа цены ещё не проверяли. GitHub запускает расписание
+    с опозданием, бывает больше часа, — тогда проверка догоняет в следующем запуске, а не пропадает."""
+    passed = [hr for hr in hours if hr <= now.hour]
+    if not passed:
+        return False
+    since = now.replace(hour=max(passed), minute=0, second=0, microsecond=0)
+    last = db.execute("SELECT MAX(observed_at) FROM hotel_prices").fetchone()[0]
+    return not last or datetime.fromisoformat(last) < since
+
+
 def check_hotels(cfg: Config, store: EventStore, sender: Any, now: datetime, client: httpx.Client,
                  force: bool = False, api: Rakuten | None = None) -> HotelReport:
     report = HotelReport()
@@ -312,12 +324,12 @@ def check_hotels(cfg: Config, store: EventStore, sender: Any, now: datetime, cli
     if api is None and not (app_id and key):
         log.info("отели: нет RAKUTEN_APPLICATION_ID / RAKUTEN_ACCESS_KEY — проверка цен выключена")
         return report
-    if not force and now.hour not in h.run_at_hours:
+    db = store.db
+    db.executescript(SCHEMA)
+    if not force and not hotels_due(db, now, h.run_at_hours):
         log.info("отели: цены проверяются в %s ч по Токио — сейчас пропуск", h.run_at_hours)
         return report
     api = api or Rakuten(app_id or "", key or "", client, origin=env("RAKUTEN_ORIGIN") or h.origin)
-    db = store.db
-    db.executescript(SCHEMA)
     today = now.date()
     plan: list[tuple[date, int, bool]] = []  # (дата заезда, ночей, сообщать ли о скидке)
     for stay in h.stays:

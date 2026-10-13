@@ -198,9 +198,9 @@ def test_low_rated_hotels_skipped(cfg):
 def test_runs_only_at_configured_hours_and_needs_keys(cfg, monkeypatch):
     only(cfg, ("sat", 1))
     api = FakeApi(lambda no, d, n: 10000 if d == SAT else 35000)
-    report, _, _ = run_hotels(cfg, api, now=NOW.replace(hour=13))
+    report, _, _ = run_hotels(cfg, api, now=NOW.replace(hour=7))
     assert report.checked == 0 and not api.calls
-    report, _, _ = run_hotels(cfg, api, now=NOW.replace(hour=13), force=True)
+    report, _, _ = run_hotels(cfg, api, now=NOW.replace(hour=7), force=True)
     assert report.sent == 1
     monkeypatch.delenv("RAKUTEN_APPLICATION_ID", raising=False)
     monkeypatch.delenv("RAKUTEN_ACCESS_KEY", raising=False)
@@ -294,3 +294,19 @@ def test_null_fields_from_api():
     raw[0]["hotel"][0]["hotelBasicInfo"]["address2"] = None
     o = parse_offers(raw, "Хаконэ", "2026-10-17", 1, 2, two_meals=True)[0]
     assert o.plan_name == "" and o.address == "神奈川県"
+
+
+def test_delayed_schedule_catches_up_once(cfg):
+    """GitHub запустил «15 часов» в 16:40 — проверка всё равно проходит, но один раз."""
+    only(cfg, ("sat", 1))
+    api = FakeApi(lambda no, d, n: 30000)
+    store = EventStore(":memory:")
+    run_hotels(cfg, api, store=store)                                    # 9:05 — плановая
+    calls = len(api.calls)
+    run_hotels(cfg, api, store=store, now=NOW.replace(hour=13))          # с 9 ч уже проверяли
+    assert len(api.calls) == calls
+    run_hotels(cfg, api, store=store, now=NOW.replace(hour=16, minute=40))  # 15-часовая опоздала
+    assert len(api.calls) > calls
+    calls = len(api.calls)
+    run_hotels(cfg, api, store=store, now=NOW.replace(hour=17))
+    assert len(api.calls) == calls
