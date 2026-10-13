@@ -64,9 +64,11 @@
    (Enter — найдёт сам), проверит, пришлёт тестовое сообщение и сохранит в `.env`.
    Можно подключить несколько аккаунтов: с каждого сначала нажмите Start у бота, потом введите его chat id
    (или «+» — найти автоматически). В `TELEGRAM_CHAT_ID` они хранятся через запятую.
-3. **OpenAI API key** — ключ с доступом к модели из `config.yaml` (`gpt-5.6-terra`).
-4. **GitHub**: создать публичный репозиторий, запушить этот код. В Settings → Secrets and variables →
-   Actions добавить секреты `OPENAI_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`.
+3. **Свой ключ OpenAI**: `uv run tokyo-events setup-openai`. Команда покажет, как завести в OpenAI отдельный
+   проект «Tokyo Events» с месячным бюджетом и ключом только для него, затем спросит ключ (ввод скрыт),
+   проверит его пробным вызовом `gpt-5.6-terra`, сохранит в `.env` и предложит обновить секрет на GitHub.
+4. **GitHub**: секреты `OPENAI_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` (Settings → Secrets and
+   variables → Actions). Команды `setup-openai` и `setup-telegram` сами предлагают их обновить.
 5. Actions → **check** → Run workflow: сначала с галочкой dry-run (посмотреть лог), потом без неё.
 
 Первый запуск берёт только находки за последние 12 часов, чтобы не завалить старым.
@@ -77,6 +79,8 @@
 uv sync
 cp .env.example .env              # и заполнить
 uv run tokyo-events sources       # проверить источники (без модели и Telegram)
+uv run tokyo-events setup-openai  # свой ключ OpenAI
+uv run tokyo-events setup-telegram # бот и аккаунты
 uv run tokyo-events test-telegram # 3 тестовых уведомления 🟢🟠🟣
 uv run tokyo-events run --dry-run # полный прогон: уведомления печатаются, а не отправляются
 uv run pytest -q                  # тесты

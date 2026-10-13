@@ -4,6 +4,7 @@
   tokyo-events sources           — проверить источники: сколько записей, что прошло бы на оценку (без модели)
   tokyo-events test-telegram     — прислать в Telegram пример уведомления каждого ранга
   tokyo-events setup-telegram    — ввести токен бота и chat id (сохраняются в .env)
+  tokyo-events setup-openai      — ввести свой ключ OpenAI (проверка, .env и GitHub Secrets)
 """
 
 from __future__ import annotations
@@ -129,6 +130,12 @@ def cmd_setup_telegram(args: argparse.Namespace) -> int:
     return setup()
 
 
+def cmd_setup_openai(args: argparse.Namespace) -> int:
+    from .setup_openai import main as setup
+
+    return setup()
+
+
 def main(argv: list[str] | None = None) -> int:
     load_dotenv()
     p = argparse.ArgumentParser(prog="tokyo-events")
@@ -143,6 +150,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("sources", help="проверить источники").set_defaults(func=cmd_sources)
     sub.add_parser("test-telegram", help="тестовые уведомления").set_defaults(func=cmd_test_telegram)
     sub.add_parser("setup-telegram", help="ввести токен бота и chat id").set_defaults(func=cmd_setup_telegram)
+    sub.add_parser("setup-openai", help="ввести свой ключ OpenAI").set_defaults(func=cmd_setup_openai)
     args = p.parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")

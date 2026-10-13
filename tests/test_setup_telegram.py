@@ -37,7 +37,7 @@ def fake_telegram(monkeypatch, updates=None, send_ok=True):
     real_client = httpx.Client
     monkeypatch.setattr(setup_telegram.httpx, "Client",
                         lambda **kw: real_client(transport=httpx.MockTransport(handler)))
-    monkeypatch.setattr(setup_telegram, "_github_repo", lambda: False)
+    monkeypatch.setattr(setup_telegram, "github_repo", lambda: False)
     return calls
 
 

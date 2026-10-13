@@ -55,14 +55,14 @@ def _find_chats(client: httpx.Client, token: str) -> list[tuple[str, str]]:
     return list(chats.items())
 
 
-def _github_repo() -> bool:
+def github_repo() -> bool:
     if not shutil.which("gh"):
         return False
     r = subprocess.run(["git", "remote", "get-url", "origin"], capture_output=True, text=True)
     return r.returncode == 0 and "github.com" in r.stdout
 
 
-def _set_github_secret(name: str, value: str) -> bool:
+def set_github_secret(name: str, value: str) -> bool:
     # значение — через stdin, не в аргументах командной строки (их видно в списке процессов)
     r = subprocess.run(["gh", "secret", "set", name], input=value, text=True, capture_output=True)
     return r.returncode == 0
@@ -106,8 +106,8 @@ def main(env_path: Path = Path(".env")) -> int:
     update_env(env_path, {"TELEGRAM_BOT_TOKEN": token, "TELEGRAM_CHAT_ID": joined})
     print(f"\n✓ Сохранено в {env_path.resolve()}: {len(chat_ids)} аккаунт(а) (файл в git не попадает)")
 
-    if _github_repo() and input("Сохранить и в GitHub Secrets этого репозитория? [y/N]: ").strip().lower() == "y":
-        ok = _set_github_secret("TELEGRAM_BOT_TOKEN", token) and _set_github_secret("TELEGRAM_CHAT_ID", joined)
+    if github_repo() and input("Сохранить и в GitHub Secrets этого репозитория? [y/N]: ").strip().lower() == "y":
+        ok = set_github_secret("TELEGRAM_BOT_TOKEN", token) and set_github_secret("TELEGRAM_CHAT_ID", joined)
         print("✓ GitHub Secrets обновлены" if ok else "✗ Не получилось — проверьте `gh auth status`")
     return 0
 
