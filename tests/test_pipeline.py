@@ -1,0 +1,181 @@
+from __future__ import annotations
+
+from tokyo_events.pipeline import run
+from tokyo_events.state import Notified, State
+
+from .conftest import NOW, FailingTelegram, FakeFetcher, FakeTransport, PartlyFailingTelegram, item
+
+
+def ready(cfg) -> State:
+    """Состояние после первого запуска: у всех источников уже есть «база»."""
+    return State(sources_ready=[s.id for s in cfg.sources])
+
+
+def test_ranks_sound_and_artist_concert_is_always_purple(cfg, classifier, transport, sender):
+    transport.rules = {
+        "Фестиваль в парке": {"rank": "green", "category": "festival", "title_ru": "Фестиваль"},
+        "Ван Гог в Уэно": {"rank": "orange", "category": "exhibition", "title_ru": "Ван Гог"},
+        # модель ошиблась с рангом — правило пользователя сильнее
+        "Ado 全国ツアー開催決定": {"rank": "green", "category": "concert", "artist": "Ado", "title_ru": "Ado — тур"},
+    }
+    fetch = FakeFetcher({
+        "gn_tokyo_festivals": [item("Фестиваль в парке"), item("Ван Гог в Уэно")],
+        "natalie_music": [item("Ado 全国ツアー開催決定", source="natalie_music")],
+    })
+    report = run(cfg, ready(cfg), fetch, classifier, sender, now=NOW)
+    assert report.sent == {"green": 1, "orange": 1, "purple": 1}
+    texts = {t.split("\n")[0]: silent for t, silent in sender.sent}
+    assert texts == {"🟢 <b>Фестиваль</b>": True, "🟠 <b>Ван Гог</b>": False, "🟣 <b>Ado — тур</b>": False}
+
+
+def test_second_run_sends_nothing_again(cfg, classifier, transport, sender):
+    transport.rules = {"Фестиваль": {"rank": "green", "category": "festival"}}
+    state = ready(cfg)
+    fetch = FakeFetcher({"gn_tokyo_festivals": [item("Фестиваль")]})
+    run(cfg, state, fetch, classifier, sender, now=NOW)
+    calls = len(transport.prompts)
+    report = run(cfg, state, fetch, classifier, sender, now=NOW)
+    assert report.candidates == 0 and len(sender.sent) == 1 and len(transport.prompts) == calls
+
+
+def test_old_items_are_skipped_silently(cfg, classifier, transport, sender):
+    state = ready(cfg)
+    fetch = FakeFetcher({"gn_tokyo_festivals": [item("Старое", hours_ago=100), item("Свежее", hours_ago=2)]})
+    report = run(cfg, state, fetch, classifier, sender, now=NOW)
+    assert report.candidates == 1
+    assert "Старое" not in transport.prompts[0]
+    assert state.is_seen(item("Старое").key)  # больше не всплывёт
+
+
+def test_first_run_takes_only_last_hours(cfg, classifier, transport, sender):
+    fetch = FakeFetcher({"gn_tokyo_festivals": [item("Вчерашнее", hours_ago=30), item("Утреннее", hours_ago=3)]})
+    report = run(cfg, State(), fetch, classifier, sender, now=NOW)
+    assert report.candidates == 1 and "Утреннее" in transport.prompts[0]
+
+
+def test_undated_page_baseline_then_new_links(cfg, classifier, transport, sender):
+    state = State()
+    old = [item(f"news {i}", source="radwimps_official", hours_ago=None, artist="RADWIMPS") for i in range(10)]
+    report = run(cfg, state, FakeFetcher({"radwimps_official": old}), classifier, sender, now=NOW)
+    assert report.candidates == 0  # первый запуск страницы без дат — всё старое
+
+    new = item("RADWIMPS ツアー2027開催決定", source="radwimps_official", hours_ago=None, artist="RADWIMPS")
+    transport.rules = {new.title: {"rank": "purple", "category": "concert", "artist": "RADWIMPS"}}
+    report = run(cfg, state, FakeFetcher({"radwimps_official": [new, *old]}), classifier, sender, now=NOW)
+    assert report.sent["purple"] == 1
+    assert "официальный источник: RADWIMPS" in transport.prompts[-1]
+
+
+def test_site_rebuild_with_many_new_undated_links_is_not_news(cfg, classifier, sender):
+    state = ready(cfg)
+    flood = [item(f"x {i}", source="yorushika_official", hours_ago=None) for i in range(cfg.filters.max_new_undated + 1)]
+    report = run(cfg, state, FakeFetcher({"yorushika_official": flood}), classifier, sender, now=NOW)
+    assert report.candidates == 0 and all(state.is_seen(it.key) for it in flood)
+
+
+def test_artists_only_sources_need_an_artist_mention(cfg, classifier, transport, sender):
+    fetch = FakeFetcher({"natalie_music": [
+        item("Adoのドームツアー決定", source="natalie_music"),            # японский текст вплотную к имени
+        item("Adobeの新機能", source="natalie_music"),                    # Ado внутри слова — не она
+        item("他のバンドがツアー", source="natalie_music"),
+        item("新ツアー", source="natalie_music", summary="美波が全国ツアーを開催"),
+    ]})
+    report = run(cfg, ready(cfg), fetch, classifier, sender, now=NOW)
+    assert report.candidates == 2
+    assert "Adoのドーム" in transport.prompts[0] and "Adobe" not in transport.prompts[0]
+
+
+def test_duplicates_of_sent_events_are_dropped(cfg, classifier, transport, sender):
+    state = ready(cfg)
+    state.notified.append(Notified(key="abc123", rank="orange", title="Ван Гог", when="", where="", artist="",
+                                   at=NOW.isoformat()))
+    transport.rules = {
+        "Ван Гог снова": {"rank": "orange", "category": "exhibition", "duplicate_of": "abc123"},
+        "Фест A": {"rank": "green", "category": "festival"},
+        "Фест A (другое СМИ)": {"rank": "green", "category": "festival", "duplicate_of": "n2"},
+    }
+    fetch = FakeFetcher({"gn_tokyo_festivals": [item("Ван Гог снова", hours_ago=1), item("Фест A", hours_ago=2),
+                                                 item("Фест A (другое СМИ)", hours_ago=3)]})
+    report = run(cfg, state, fetch, classifier, sender, now=NOW)
+    assert report.duplicates == 2 and report.sent["green"] == 1
+    assert "abc123 | orange | Ван Гог" in transport.prompts[0]  # модель видит, что уже отправлено
+
+
+def test_duplicate_of_skipped_item_is_still_sent(cfg, classifier, transport, sender):
+    transport.rules = {
+        "Реклама": {"rank": "none"},
+        "Событие": {"rank": "green", "category": "festival", "duplicate_of": "n1"},
+    }
+    fetch = FakeFetcher({"gn_tokyo_festivals": [item("Реклама", hours_ago=1), item("Событие", hours_ago=2)]})
+    report = run(cfg, ready(cfg), fetch, classifier, sender, now=NOW)
+    assert report.sent["green"] == 1
+
+
+def test_gallery_copies_of_one_article_are_one_item(cfg, classifier, sender):
+    fetch = FakeFetcher({
+        "gn_tokyo_openings": [item("画像29 / 45＞「グランスタ東京」がオープン - ウォーカープラス", source="gn_tokyo_openings"),
+                              item("画像1 / 45＞「グランスタ東京」がオープン - ウォーカープラス", source="gn_tokyo_openings")],
+        "gn_tokyo_en": [item("＜画像3 / 9＞「グランスタ東京」がオープン - Yahoo!ニュース", source="gn_tokyo_en")],
+    })
+    report = run(cfg, ready(cfg), fetch, classifier, sender, now=NOW)
+    assert report.candidates == 1
+
+
+def test_telegram_failure_keeps_item_for_next_run(cfg, classifier, transport):
+    transport.rules = {"Фестиваль": {"rank": "green", "category": "festival"}}
+    state = ready(cfg)
+    fetch = FakeFetcher({"gn_tokyo_festivals": [item("Фестиваль")]})
+    report = run(cfg, state, fetch, classifier, FailingTelegram(), now=NOW)
+    assert report.errors and not state.is_seen(item("Фестиваль").key)
+
+
+def test_llm_failure_keeps_items_and_reports_error(cfg, classifier, transport, sender):
+    transport.fail = True
+    state = ready(cfg)
+    fetch = FakeFetcher({"gn_tokyo_festivals": [item("Фестиваль")]})
+    report = run(cfg, state, fetch, classifier, sender, now=NOW)
+    assert report.errors and not state.is_seen(item("Фестиваль").key)
+
+
+def test_daily_token_limit_stops_calls(cfg, sender):
+    from tokyo_events.classify import Classifier
+
+    transport = FakeTransport(tokens=990_000)
+    classifier = Classifier(cfg, transport)
+    state = ready(cfg)
+    fetch = FakeFetcher({"gn_tokyo_festivals": [item(f"Событие {i}", hours_ago=1 + i / 10) for i in range(12)]})
+    report = run(cfg, state, fetch, classifier, sender, now=NOW)
+    assert len(transport.prompts) == 1  # второй пакет вылез бы за 1 000 000 токенов
+    assert any("лимит токенов" in e for e in report.errors)
+    assert state.tokens_on("2026-10-13") == 990_000
+
+
+def test_one_broken_source_does_not_stop_others(cfg, classifier, transport, sender):
+    transport.rules = {"Фестиваль": {"rank": "green", "category": "festival"}}
+    fetch = FakeFetcher({"gn_tokyo_festivals": [item("Фестиваль")]})
+    fetch.fail = {"natalie_music"}
+    report = run(cfg, ready(cfg), fetch, classifier, sender, now=NOW)
+    assert report.sent["green"] == 1 and len(report.errors) == 1
+
+
+def test_no_api_key_leaves_items_for_later(cfg, sender):
+    state = ready(cfg)
+    report = run(cfg, state, FakeFetcher({"gn_tokyo_festivals": [item("Фестиваль")]}), None, sender, now=NOW)
+    assert report.errors and not state.is_seen(item("Фестиваль").key)
+
+
+def test_rank_filter_from_config(cfg, classifier, transport, sender):
+    cfg.filters.notify_ranks = ["orange", "purple"]
+    transport.rules = {"Фестиваль": {"rank": "green", "category": "festival"}}
+    report = run(cfg, ready(cfg), FakeFetcher({"gn_tokyo_festivals": [item("Фестиваль")]}), classifier, sender,
+                 now=NOW)
+    assert report.sent["green"] == 0 and report.skipped == 1
+
+
+def test_partial_telegram_failure_is_reported_but_not_resent(cfg, classifier, transport):
+    transport.rules = {"Фестиваль": {"rank": "green", "category": "festival"}}
+    state = ready(cfg)
+    report = run(cfg, state, FakeFetcher({"gn_tokyo_festivals": [item("Фестиваль")]}), classifier,
+                 PartlyFailingTelegram(), now=NOW)
+    assert report.sent["green"] == 1 and state.is_seen(item("Фестиваль").key)
+    assert report.errors == ["Telegram: чат …789: Telegram: 403 Forbidden: bot was blocked by the user"]

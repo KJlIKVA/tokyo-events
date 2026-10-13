@@ -1,0 +1,20 @@
+# В публичном репозитории GitHub сам выключает расписание, если 60 дней не было коммитов.
+# Раз в неделю заново включаем workflow check — это сбрасывает отсчёт, коммиты не нужны.
+name: keepalive
+
+on:
+  schedule:
+    - cron: "0 1 * * 1"  # понедельник, 10:00 JST
+  workflow_dispatch:
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Включить расписание check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/check.yml/enable"

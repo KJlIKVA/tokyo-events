@@ -1,0 +1,112 @@
+# Настройки Tokyo Events. Секреты (токены) здесь НЕ хранятся: они в GitHub Secrets / локальном .env.
+
+timezone: Asia/Tokyo
+
+# Как часто проверять — задаётся в .github/workflows/check.yml (cron, по UTC). Сейчас: каждые 2 часа с 7:00 до 23:00 JST.
+
+llm:
+  model: gpt-5.6-terra
+  effort: low
+  max_output_tokens: 16000     # на один пакет, включая рассуждение
+  batch_size: 20               # сколько находок отправлять модели за один вызов
+  max_items_per_run: 120       # больше за запуск не разбираем: остальное подождёт следующего запуска
+  daily_token_limit: 1000000   # жёсткий потолок токенов в сутки (UTC); вызов, который может его превысить, не делается
+  request_timeout_s: 180
+  # для отчёта о расходах в логах (USD за 1M токенов)
+  price_per_1m: {input: 2.50, cached_input: 0.25, output: 15.00}
+
+filters:
+  max_age_hours: 72            # находки старше этого молча помечаются просмотренными (не уведомляем о старом)
+  first_run_hours: 12          # самый первый запуск источника: только последние 12 часов, чтобы не завалить старым
+  notify_ranks: [green, orange, purple]
+  silent_ranks: [green]        # приходят без звука
+  memory_days: 45              # сколько дней помнить отправленное, чтобы не присылать одно событие дважды
+  seen_days: 60                # сколько дней помнить просмотренные ссылки
+  max_new_undated: 10          # если на странице без дат разом появилось больше новых ссылок — это перестройка
+                               # сайта, а не новости: молча запоминаем
+
+# Город для 🟢 и 🟠. 🟣 «грандиозные события» — по всей Японии.
+area: "Токио (23 района и район Тама)"
+
+# Любимые артисты: их концерты — всегда 🟣.
+# aliases — как имя пишут в заголовках (латиница сравнивается целым словом и с учётом регистра).
+artists:
+  - name: Ado
+    aliases: [Ado]
+    about: "японская певица Ado (без лица на публике, хиты «うっせぇわ», «新時代»)."
+  - name: YOASOBI
+    aliases: [YOASOBI]
+    about: "дуэт YOASOBI (Ayase и ikura). Сольные выступления ikura / 幾田りら или Ayase — это НЕ концерт YOASOBI."
+  - name: RADWIMPS
+    aliases: [RADWIMPS, ラッドウィンプス]
+    about: "рок-группа RADWIMPS (Ёдзиро Нода, саундтреки к фильмам Синкая)."
+  - name: 美波
+    aliases: [美波]
+    about: >-
+      певица и автор песен 美波 (Minami): официальный сайт 373official.com, фан-клуб Team373,
+      песни «カワキヲアメク» (опенинг аниме «Domestic na Kanojo», 2019) и «ライラック».
+      НЕ путать с актрисой 美波 (Minami, род. 1986), с другими людьми по имени Минами (南, みなみ, MINAMI,
+      美波 как часть другого имени), с районом Минами в Осаке и фестивалем MINAMI WHEEL.
+      Если по тексту нельзя уверенно сказать, что это именно певица 美波 — это не она.
+  - name: ヨルシカ
+    aliases: [ヨルシカ, Yorushika]
+    about: "дуэт ヨルシカ / Yorushika (n-buna и suis)."
+
+# Источники.
+#   kind: rss — RSS/Atom-лента; google_news — поиск Google Новостей (q как в поиске, when:2d = за 2 дня);
+#         page — страница новостей без ленты: новые ссылки по link_pattern считаются новостями.
+#   artists_only: true — дальше проходят только записи, где упомянут кто-то из artists (для общих лент).
+#   artist — официальный источник одного артиста: все записи про него.
+sources:
+  # --- артисты: официальные сайты ---
+  - id: minami_official
+    kind: rss
+    url: https://www.373official.com/rss.xml
+    artist: 美波
+  - id: radwimps_official
+    kind: page
+    url: https://radwimps.jp/news/
+    link_pattern: '^https://radwimps\.jp/news/\d+/$'
+    artist: RADWIMPS
+  - id: yorushika_official
+    kind: page
+    url: https://yorushika.com/news
+    link_pattern: '/news/detail/\d+$'
+    artist: ヨルシカ
+
+  # --- артисты: музыкальные новости (у Ado и YOASOBI нет ленты на сайте) ---
+  - id: natalie_music
+    kind: rss
+    url: https://natalie.mu/music/feed/news
+    artists_only: true
+  - id: gn_artists_live
+    kind: google_news
+    q: '(Ado OR YOASOBI OR RADWIMPS OR ヨルシカ) (ライブ OR ツアー OR 公演 OR 出演 OR ドーム) when:2d'
+    artists_only: true
+  - id: gn_minami_live
+    kind: google_news
+    q: '美波 (ライブ OR ツアー OR 公演 OR ワンマン) when:3d'
+    artists_only: true
+
+  # --- Токио ---
+  - id: tokyo_cheapo
+    kind: rss
+    url: https://tokyocheapo.com/feed/
+  - id: gn_tokyo_exhibitions
+    kind: google_news
+    q: '(東京 OR 都内) (展覧会 OR 美術館 OR 博物館) (開催決定 OR 開幕 OR 巡回) when:2d'
+  - id: gn_tokyo_openings
+    kind: google_news
+    q: '(東京 OR 都内) (オープン OR 開業 OR 開園 OR グランドオープン) when:2d'
+  - id: gn_tokyo_festivals
+    kind: google_news
+    q: '(東京 OR 都内) (祭り OR フェス OR フェスティバル OR 花火大会 OR イルミネーション) 開催 when:2d'
+  - id: gn_tokyo_en
+    kind: google_news
+    q: 'Tokyo (exhibition OR festival OR "grand opening" OR "opens") when:2d'
+    lang: en
+
+  # --- грандиозное по всей Японии ---
+  - id: gn_japan_big
+    kind: google_news
+    q: '(万博 OR 国際博覧会 OR オリンピック OR ワールドカップ OR 世界選手権 OR 日本初開催 OR 国内初開催) (開催決定 OR 開催 OR 開幕) when:2d'
