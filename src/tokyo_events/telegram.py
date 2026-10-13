@@ -6,6 +6,7 @@ import html
 import logging
 import time
 import urllib.parse
+from typing import Any
 
 import httpx
 
@@ -74,7 +75,7 @@ class Telegram:
     def __init__(self, token: str, chat_ids: list[str], client: httpx.Client | None = None) -> None:
         if not chat_ids:
             raise ValueError("нужен хотя бы один chat id")
-        self._url = f"https://api.telegram.org/bot{token}/sendMessage"
+        self._base = f"https://api.telegram.org/bot{token}"
         self.chat_ids = chat_ids
         self.client = client or httpx.Client(timeout=30)
 
@@ -91,23 +92,48 @@ class Telegram:
             raise TelegramError("; ".join(problems))
         return problems
 
-    def _send_one(self, chat_id: str, text: str, silent: bool) -> None:
-        payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML",
-                   "disable_notification": silent, "link_preview_options": {"is_disabled": True}}
+    def _send_one(self, chat_id: str, text: str, silent: bool) -> int:
+        """message_id отправленного сообщения."""
+        result = self._call("sendMessage", {"chat_id": chat_id, "text": text, "parse_mode": "HTML",
+                                            "disable_notification": silent,
+                                            "link_preview_options": {"is_disabled": True}})
+        return int(result["message_id"])
+
+    def _call(self, method: str, payload: dict[str, Any]) -> Any:
         for attempt in range(3):
             try:
-                r = self.client.post(self._url, json=payload)
+                r = self.client.post(f"{self._base}/{method}", json=payload)
                 data = r.json()
             except (httpx.HTTPError, ValueError) as e:
                 # текст исключения может содержать URL с токеном — пишем только тип
                 raise TelegramError(f"Telegram не ответил ({type(e).__name__})") from None
             if data.get("ok"):
-                return
+                return data["result"]
             retry_after = (data.get("parameters") or {}).get("retry_after")
             if data.get("error_code") == 429 and retry_after and attempt < 2:
                 time.sleep(float(retry_after))
                 continue
             raise TelegramError(f"Telegram: {data.get('error_code')} {data.get('description', '')}")
+
+    def own_messages_hint(self) -> dict[str, set[int]]:
+        """id сообщений, которые пользователи сами писали боту (из getUpdates) — их при очистке не трогаем."""
+        incoming: dict[str, set[int]] = {}
+        for upd in self._call("getUpdates", {"allowed_updates": ["message"]}) or []:
+            msg = upd.get("message") or {}
+            if "chat" in msg and "message_id" in msg:
+                incoming.setdefault(str(msg["chat"]["id"]), set()).add(int(msg["message_id"]))
+        return incoming
+
+    def clear(self, chat_id: str, keep: set[int], depth: int = 500) -> int:
+        """Удалить сообщения бота в личном чате. Telegram разрешает боту удалять свои сообщения
+        не старше 48 часов; id в личном чате идут подряд, поэтому удаляем диапазон до свежего
+        служебного сообщения (его тоже), пропуская сообщения пользователя из keep.
+        Несуществующие и чужие id Telegram просто пропускает. Возвращает, сколько id отправлено на удаление."""
+        last = self._send_one(chat_id, "🧹 Очищаю чат…", silent=True)
+        ids = [i for i in range(max(1, last - depth), last + 1) if i not in keep]
+        for start in range(0, len(ids), 100):  # deleteMessages — до 100 id за раз
+            self._call("deleteMessages", {"chat_id": chat_id, "message_ids": ids[start: start + 100]})
+        return len(ids)
 
 
 def _mask(chat_id: str) -> str:

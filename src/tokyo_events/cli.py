@@ -5,6 +5,7 @@
   tokyo-events test-telegram     — прислать в Telegram пример уведомления каждого ранга
   tokyo-events setup-telegram    — ввести токен бота и chat id (сохраняются в .env)
   tokyo-events setup-openai      — ввести свой ключ OpenAI (проверка, .env и GitHub Secrets)
+  tokyo-events clear-chat        — удалить сообщения бота во всех чатах (Telegram даёт удалять не старше 48 часов)
 """
 
 from __future__ import annotations
@@ -130,6 +131,18 @@ def cmd_setup_telegram(args: argparse.Namespace) -> int:
     return setup()
 
 
+def cmd_clear_chat(args: argparse.Namespace) -> int:
+    tg = _telegram()
+    if not args.yes and input(f"Удалить сообщения бота в {len(tg.chat_ids)} чат(ах)? [y/N]: ").strip().lower() != "y":
+        print("Отменено")
+        return 1
+    keep = tg.own_messages_hint()
+    for chat_id in tg.chat_ids:
+        n = tg.clear(chat_id, keep.get(chat_id, set()))
+        print(f"чат …{chat_id[-3:]}: очищено (проверено {n} сообщений, ваши собственные не трогали)")
+    return 0
+
+
 def cmd_setup_openai(args: argparse.Namespace) -> int:
     from .setup_openai import main as setup
 
@@ -151,6 +164,9 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("test-telegram", help="тестовые уведомления").set_defaults(func=cmd_test_telegram)
     sub.add_parser("setup-telegram", help="ввести токен бота и chat id").set_defaults(func=cmd_setup_telegram)
     sub.add_parser("setup-openai", help="ввести свой ключ OpenAI").set_defaults(func=cmd_setup_openai)
+    c = sub.add_parser("clear-chat", help="удалить сообщения бота во всех чатах (не старше 48 часов)")
+    c.add_argument("--yes", action="store_true", help="без подтверждения")
+    c.set_defaults(func=cmd_clear_chat)
     args = p.parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")

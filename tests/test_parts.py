@@ -181,7 +181,7 @@ def test_telegram_sends_to_every_chat_and_reports_partial_failure():
         sent.append(chat)
         if chat == "222":
             return httpx.Response(403, json={"ok": False, "error_code": 403, "description": "Forbidden"})
-        return httpx.Response(200, json={"ok": True, "result": {}})
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 1}})
 
     tg = Telegram("t", ["111", "222"], client=httpx.Client(transport=httpx.MockTransport(handler)))
     assert tg.send("привет") == ["чат …222: Telegram: 403 Forbidden"]
@@ -221,3 +221,33 @@ def test_run_is_skipped_until_telegram_is_configured(monkeypatch, tmp_path, caps
     assert cli.main(["--state", str(state), "run"]) == 0
     assert "Telegram не настроен" in capsys.readouterr().out
     assert not state.exists()
+
+
+def test_clear_chat_deletes_range_but_keeps_users_own_messages():
+    import httpx
+
+    from tokyo_events.telegram import Telegram
+
+    deleted: list[int] = []
+
+    def handler(request):
+        method = request.url.path.rsplit("/", 1)[-1]
+        body = json.loads(request.content)
+        if method == "getUpdates":
+            return httpx.Response(200, json={"ok": True, "result": [
+                {"message": {"message_id": 1, "chat": {"id": 111}}},   # /start пользователя
+                {"message": {"message_id": 5, "chat": {"id": 222}}},   # другой чат
+            ]})
+        if method == "sendMessage":
+            return httpx.Response(200, json={"ok": True, "result": {"message_id": 250}})
+        if method == "deleteMessages":
+            assert len(body["message_ids"]) <= 100
+            deleted.extend(body["message_ids"])
+            return httpx.Response(200, json={"ok": True, "result": True})
+        return httpx.Response(404, json={"ok": False})
+
+    tg = Telegram("t", ["111"], client=httpx.Client(transport=httpx.MockTransport(handler)))
+    keep = tg.own_messages_hint()
+    assert keep == {"111": {1}, "222": {5}}
+    assert tg.clear("111", keep["111"]) == 249
+    assert deleted == list(range(2, 251))  # всё до служебного сообщения включительно, кроме /start
