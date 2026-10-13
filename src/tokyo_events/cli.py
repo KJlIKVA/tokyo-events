@@ -6,7 +6,6 @@
   tokyo-events setup-telegram    — ввести токен бота и chat id (сохраняются в .env)
   tokyo-events setup-openai      — ввести свой ключ OpenAI (проверка, .env и GitHub Secrets)
   tokyo-events setup-rakuten     — ключи 楽天トラベル: цены отелей и рёканов
-  tokyo-events setup-serpapi     — ключ SerpApi: авиабилеты (Google Flights) и Booking/Trip.com (Google Hotels)
   tokyo-events events [--github] — показать базу событий и историю обновлений
   tokyo-events clear-chat        — удалить сообщения бота во всех чатах (Telegram даёт удалять не старше 48 часов)
 """
@@ -23,19 +22,14 @@ from zoneinfo import ZoneInfo
 import httpx
 
 from .classify import Classifier, OpenAITransport, Verdict
-from .config import Config, env, load_config, load_dotenv
+from .config import env, load_config, load_dotenv
 from .enrich import Details, Enricher, Venue
 from .events_db import Event, EventStore, diff
-from .flights import check_flights
-from .google_hotels import check_google_hotels
 from .hotels import check_hotels
 from .pipeline import Report, collect, http_fetcher, run
-from .serpapi import Budget, SerpApi
 from .sources import Item
 from .state import State
 from .telegram import CIRCLES, PrintTelegram, Telegram, format_message, format_update, parse_chat_ids
-
-log = logging.getLogger(__name__)
 
 STATE_PATH = "state/state.json"
 EVENTS_DB = "state/events.db"
@@ -65,11 +59,6 @@ def cmd_run(args: argparse.Namespace) -> int:
         report = run(cfg, state, store, http_fetcher(client), classifier, enricher, sender)
         now = datetime.now(UTC).astimezone(ZoneInfo(cfg.timezone))
         hotels = check_hotels(cfg, store, sender, now, client, force=args.hotels_now)
-        budget = serp_budget(cfg, store, client, now)
-        flights = check_flights(cfg, store.db, sender, now, budget, force=args.hotels_now)
-        ghotels = check_google_hotels(cfg, store.db, sender, now, budget, force=args.hotels_now)
-        if budget:
-            budget.prune()
     if args.dry_run:
         print("dry-run: состояние и база не сохранены, в Telegram ничего не отправлено")
     else:
@@ -79,27 +68,11 @@ def cmd_run(args: argparse.Namespace) -> int:
     print(report.summary())
     if hotels.checked or hotels.errors:
         print(f"отели: запросов {hotels.checked}, предложений {hotels.offers}, скидок отправлено {hotels.sent}")
-    if flights.checked or flights.errors:
-        print(f"авиабилеты: запросов {flights.checked}, направлений {flights.fares}, отправлено {flights.sent}")
-    if ghotels.checked or ghotels.errors:
-        print(f"Google Hotels: запросов {ghotels.checked}, отелей {ghotels.offers}, отправлено {ghotels.sent}")
-    if budget:
-        print(f"SerpApi: потрачено {budget.spent} из {budget.free} доступных сегодня")
-    serp_errors = [budget.error] if budget and budget.error else []
-    for e in report.errors + hotels.errors + flights.errors + ghotels.errors + serp_errors:
+    for e in report.errors + hotels.errors:
         print("  ошибка:", e)
     # падаем только если не работает ничего: один недоступный источник — не повод для тревоги
-    prices_broken = any(bool(x.errors) and x.checked == 0 for x in (hotels, flights, ghotels)) or bool(serp_errors)
-    return 1 if _broken(report, len(cfg.sources)) or prices_broken else 0
-
-
-def serp_budget(cfg: Config, store: EventStore, client: httpx.Client, now: datetime) -> Budget | None:
-    """Доля запросов SerpApi на этот запуск. Нет ключа — авиабилеты и Google Hotels выключены."""
-    key = env("SERPAPI_API_KEY")
-    if not key:
-        log.info("нет SERPAPI_API_KEY — авиабилеты и Google Hotels выключены")
-        return None
-    return Budget(store.db, SerpApi(key, client), now, cfg.serpapi.monthly_searches, cfg.serpapi.reserve)
+    hotels_broken = bool(hotels.errors) and hotels.checked == 0
+    return 1 if _broken(report, len(cfg.sources)) or hotels_broken else 0
 
 
 def migrate_notified(state: State, store: EventStore) -> None:
@@ -251,12 +224,6 @@ def cmd_setup_rakuten(args: argparse.Namespace) -> int:
     return setup()
 
 
-def cmd_setup_serpapi(args: argparse.Namespace) -> int:
-    from .setup_serpapi import main as setup
-
-    return setup()
-
-
 def cmd_setup_openai(args: argparse.Namespace) -> int:
     from .setup_openai import main as setup
 
@@ -273,7 +240,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = p.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("run", help="один запуск")
     r.add_argument("--hotels-now", action="store_true",
-                   help="проверить цены сейчас (отели, авиабилеты), не дожидаясь часа")
+                   help="проверить цены отелей сейчас, не дожидаясь часа")
     r.add_argument("--dry-run", action="store_true",
                    help="печатать уведомления вместо отправки, не сохранять состояние")
     r.set_defaults(func=cmd_run)
@@ -282,8 +249,6 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("setup-telegram", help="ввести токен бота и chat id").set_defaults(func=cmd_setup_telegram)
     sub.add_parser("setup-openai", help="ввести свой ключ OpenAI").set_defaults(func=cmd_setup_openai)
     sub.add_parser("setup-rakuten", help="ключи 楽天トラベル для цен отелей").set_defaults(func=cmd_setup_rakuten)
-    sub.add_parser("setup-serpapi", help="ключ SerpApi: авиабилеты и Booking/Trip.com").set_defaults(
-        func=cmd_setup_serpapi)
     ev = sub.add_parser("events", help="показать базу событий")
     ev.add_argument("--github", action="store_true", help="взять свежую базу из GitHub (ветка state)")
     ev.set_defaults(func=cmd_events)

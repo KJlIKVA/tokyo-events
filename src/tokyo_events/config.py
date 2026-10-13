@@ -105,60 +105,6 @@ class Hotels(BaseModel):
     areas: list[HotelArea] = []
 
 
-class SerpApiCfg(BaseModel):
-    """SerpApi — Google Flights и Google Hotels. Бесплатный тариф — 250 запросов в месяц."""
-    monthly_searches: int = 250   # по тарифу; бот тратит не больше 1/30 в день
-    reserve: int = 5              # не тратить последние запросы на счёте
-
-
-class FlightSearch(BaseModel):
-    """Поиск Google Flights Explore: куда дешевле всего улететь из Токио в ближайшие полгода."""
-    name: str                                 # для журнала и памяти цен: «выходные_япония»
-    travel_duration: Literal[1, 2, 3] = 1     # 1 — выходные, 2 — неделя, 3 — две недели
-    arrival_area_id: str = ""                 # регион в Google: /m/03_3d — Япония; пусто — весь мир
-    max_duration: int | None = None           # не дольше стольких минут в пути (туда)
-
-
-class Flights(BaseModel):
-    """Авиабилеты из Токио (туда и обратно, за человека): скидка к обычной цене направления."""
-    enabled: bool = True
-    run_at_hours: list[int] = [9]
-    departure_id: str = "HND,NRT"
-    searches: list[FlightSearch] = [
-        FlightSearch(name="выходные_япония", travel_duration=1, arrival_area_id="/m/03_3d"),
-        FlightSearch(name="неделя_рядом", travel_duration=2, max_duration=420),
-    ]
-    history_days: int = 28
-    min_history: int = 4          # обычная цена — из стольких прошлых дней (первые дни бот только запоминает)
-    min_saving_yen: int = 3000
-    verify_per_run: int = 2       # лучшие находки — проверка в Google Flights: обычный диапазон цен на эти даты
-    max_alerts_per_run: int = 3
-    realert_days: int = 14        # то же направление снова — не раньше, если не стало ещё дешевле
-
-
-class GoogleHotelArea(BaseModel):
-    name: str                     # как в уведомлении
-    q: str                        # запрос в Google Hotels
-
-
-class GoogleHotels(BaseModel):
-    """Отели с ценами Booking.com, Trip.com, Agoda и др. — через Google Hotels. Google сам помечает цену
-    «на N% ниже обычного» (обычная — медиана цены этого отеля за год); места — по кругу, на сколько хватит
-    дневной доли запросов SerpApi после авиабилетов."""
-    enabled: bool = True
-    run_at_hours: list[int] = [9]
-    adults: int = 2
-    stays: list[Stay] = [Stay(checkin="sat", nights=1)]
-    alert_weeks: int = 2          # ближайшие N недель
-    max_per_run: int = 10         # запросов за проверку (на бесплатном тарифе выйдет 3–4)
-    min_review: float = 3.5       # рейтинг Google (из 5)
-    min_saving_yen: int = 3000
-    history_days: int = 60
-    min_compare: int = 2
-    max_alerts_per_run: int = 3
-    areas: list[GoogleHotelArea] = []
-
-
 class Artist(BaseModel):
     name: str
     aliases: list[str]
@@ -192,9 +138,6 @@ class Config(BaseModel):
     filters: Filters = Filters()
     deals: Deals = Deals()
     hotels: Hotels = Hotels()
-    serpapi: SerpApiCfg = SerpApiCfg()
-    flights: Flights = Flights()
-    google_hotels: GoogleHotels = GoogleHotels()
     area: str
     artists: list[Artist]
     sources: list[Source]

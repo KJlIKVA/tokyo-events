@@ -131,59 +131,6 @@ hotels:
     - {name: Онна, lat: 26.4970, lon: 127.8530, onsen: false, meals: any}
 
 # Город для 🟢 и 🟠. 🟣 «грандиозные события» — по всей Японии.
-# Авиабилеты и цены Booking.com / Trip.com / Agoda — через SerpApi (Google Flights и Google Hotels).
-# Работает, только если задан SERPAPI_API_KEY (uv run tokyo-events setup-serpapi).
-serpapi:
-  monthly_searches: 250        # бесплатный тариф; бот тратит не больше 1/30 в день (~8). Купили больше — поставьте здесь
-  reserve: 5                   # последние запросы на счёте не трогать
-
-# Авиабилеты из Токио (Ханэда и Нарита), туда и обратно за человека. Раз в день Google Flights Explore
-# находит самую низкую цену по каждому направлению на полгода вперёд; бот запоминает и сравнивает с обычной
-# (медиана за прошлые дни) — первые 4 дня только запоминает. Лучшие находки проверяет в Google Flights:
-# если Google считает цену высокой — не присылает.
-flights:
-  enabled: true
-  run_at_hours: [9]
-  departure_id: HND,NRT
-  searches:
-    - {name: выходные_япония, travel_duration: 1, arrival_area_id: /m/03_3d}   # выходные, по Японии
-    - {name: неделя_рядом, travel_duration: 2, max_duration: 420}              # неделя, до 7 ч лёта
-  history_days: 28
-  min_history: 4
-  min_saving_yen: 3000
-  verify_per_run: 2
-  max_alerts_per_run: 3
-  realert_days: 14
-
-# Отели с ценами Booking.com, Trip.com, Agoda и др. — Google Hotels. Google сам помечает «на N% ниже обычного»
-# (от 15%); места — по кругу, на сколько хватит дневной доли запросов после авиабилетов (бесплатно — 3–4 в день).
-google_hotels:
-  enabled: true
-  run_at_hours: [9]
-  adults: 2
-  stays:
-    - {checkin: sat, nights: 1}
-  alert_weeks: 2
-  max_per_run: 10
-  min_review: 3.5
-  min_saving_yen: 3000
-  max_alerts_per_run: 3
-  areas:
-    - {name: Хаконэ, q: 箱根 温泉旅館}
-    - {name: Атами, q: 熱海 温泉旅館}
-    - {name: Идзу, q: 伊豆 温泉旅館}
-    - {name: Кинугава, q: 鬼怒川温泉 旅館}
-    - {name: Кусацу, q: 草津温泉 旅館}
-    - {name: Каруидзава, q: 軽井沢 ホテル}
-    - {name: Киото, q: 京都 ホテル}
-    - {name: Осака, q: 大阪 ホテル}
-    - {name: Канадзава, q: 金沢 ホテル}
-    - {name: Саппоро, q: 札幌 ホテル}
-    - {name: Наха, q: 那覇 ホテル}
-    - {name: Фукуока, q: 福岡 ホテル}
-    - {name: Бэппу, q: 別府温泉 旅館}
-    - {name: Юфуин, q: 由布院 旅館}
-
 area: "Токио (23 района и район Тама)"
 
 # Любимые артисты: их концерты — всегда 🟣.
