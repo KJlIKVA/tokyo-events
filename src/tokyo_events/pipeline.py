@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Protocol
 from zoneinfo import ZoneInfo
 
@@ -14,7 +14,7 @@ import httpx
 from .classify import BudgetExceeded, Classifier, LLMError, Verdict
 from .config import Config, Source
 from .enrich import Details, Enricher
-from .events_db import Event, EventStore, diff
+from .events_db import TICKETS_OPEN, Event, EventStore, diff
 from .sources import Item, artist_matcher, fetch_source, mentions_artist
 from .state import State
 from .telegram import TelegramError, format_message, format_update
@@ -39,6 +39,7 @@ class Report:
     skipped: int = 0
     duplicates: int = 0
     no_dates: int = 0
+    too_early: int = 0
     updates: int = 0
     errors: list[str] = field(default_factory=list)
 
@@ -46,7 +47,8 @@ class Report:
         sent = ", ".join(f"{k}={v}" for k, v in self.sent.items())
         return (f"собрано {self.fetched}, новых {self.new}, на оценку {self.candidates}; отправлено: {sent}, "
                 f"обновлений 🔴: {self.updates}; "
-                f"не событие/не подходит: {self.skipped}, дублей: {self.duplicates}, без чётких дат: {self.no_dates}; "
+                f"не событие/не подходит: {self.skipped}, дублей: {self.duplicates}, без чётких дат: {self.no_dates}, "
+                f"далеко и без билетов: {self.too_early}; "
                 f"ошибок: {len(self.errors)}")
 
 
@@ -163,6 +165,20 @@ def deal_rank(pct: int, cfg: Config) -> str | None:
     if pct >= t.min_pct:
         return "green"
     return None
+
+
+def too_early(v: Verdict, d: Details, today: date, far_days: int) -> bool:
+    """Правило пользователя: событие без точных дат или дальше far_days — только когда билеты уже продаются
+    или объявлен старт продаж. Скидки и концерты своих артистов — как раньше."""
+    if v.category == "deal" or (v.artist and v.category == "concert") or d.tickets in TICKETS_OPEN:
+        return False
+    if d.date_precision != "exact":
+        return True
+    try:
+        start = date.fromisoformat(d.start_date or d.end_date)
+    except ValueError:
+        return False  # точные даты, но день не разобрали — не далёкое
+    return (start - today).days > far_days
 
 
 def _location_ok(v: Verdict, rank: str, location: str) -> bool:
@@ -296,6 +312,13 @@ class _Ctx:
                 report.skipped += 1
                 _mark_seen(state, item, now)
                 return
+        if too_early(v, details, now.date(), cfg.filters.far_days):
+            # когда объявят старт продаж, придёт новая новость — тогда и пришлём
+            log.info("   далеко (%s), билеты не продаются (%s) — ждём старта продаж", details.dates_ru,
+                     details.tickets)
+            report.too_early += 1
+            _mark_seen(state, item, now)
+            return
         where_ok = _location_ok(v, rank, details.location)
         if not where_ok:
             log.info("   не то место для ранга %s (%s) — пропуск", rank, details.location)
@@ -320,7 +343,8 @@ class _Ctx:
             date_precision=details.date_precision, start_date=details.start_date, end_date=details.end_date,
             price_ru=details.price_ru, is_free=details.is_free, status=details.status,
             venues=[x.model_dump() for x in details.venues], official_url=details.official_url,
-            venue_url=details.venue_url, first_sent_at=at, updated_at=at))
+            venue_url=details.venue_url, tickets=details.tickets, tickets_ru=details.tickets_ru,
+            first_sent_at=at, updated_at=at))
         self.store.add_source(item.key, item.key, item.link, item.title, "new", now)
         report.sent[rank] += 1
 

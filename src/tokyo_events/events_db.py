@@ -33,6 +33,8 @@ CREATE TABLE IF NOT EXISTS events (
     venues         TEXT NOT NULL DEFAULT '[]',   -- JSON: [{name, address, area_ru, on_map, dates_ru}]
     official_url   TEXT NOT NULL DEFAULT '',
     venue_url      TEXT NOT NULL DEFAULT '',
+    tickets        TEXT NOT NULL DEFAULT '',     -- on_sale | sale_announced | later | not_needed | unknown
+    tickets_ru     TEXT NOT NULL DEFAULT '',
     first_sent_at  TEXT NOT NULL,
     updated_at     TEXT NOT NULL,
     updates_sent   INTEGER NOT NULL DEFAULT 0
@@ -55,7 +57,11 @@ CREATE TABLE IF NOT EXISTS event_changes (       -- история обновл�
 );
 """
 
+# колонки, добавленные после первой версии базы: у старой базы их нет — добавляем
+ADDED_COLUMNS = {"tickets": "TEXT NOT NULL DEFAULT ''", "tickets_ru": "TEXT NOT NULL DEFAULT ''"}
+
 STATUS_RU = {"scheduled": "по плану", "postponed": "перенесено", "cancelled": "отменено"}
+TICKETS_OPEN = ("on_sale", "sale_announced")  # билеты продаются или объявлен старт продаж
 
 
 @dataclass
@@ -75,6 +81,8 @@ class Event:
     venues: list[dict] = field(default_factory=list)
     official_url: str = ""
     venue_url: str = ""
+    tickets: str = ""
+    tickets_ru: str = ""
     first_sent_at: str = ""
     updated_at: str = ""
     updates_sent: int = 0
@@ -86,7 +94,7 @@ class Event:
 
 @dataclass
 class Change:
-    field: str     # dates | price | venues | status
+    field: str     # dates | price | tickets | venues | status
     label: str     # по-русски, для уведомления
     old: str
     new: str
@@ -125,6 +133,12 @@ def diff(event: Event, new: dict) -> list[Change]:
         changes.append(Change("price", "Объявлена цена", "", new_price))
     elif new_price and _prices(new_price) and _prices(new_price) != _prices(event.price_ru):
         changes.append(Change("price", "Цена изменилась", event.price_ru, new_price))
+    # билеты: объявили старт продаж или продажа уже идёт — один раз, дальше не сообщаем.
+    # У событий из базы до 21.10.2026 о билетах ничего не записано ("") — по ним не сообщаем, чтобы не завалить
+    new_tickets = new.get("tickets", "")
+    if new_tickets in TICKETS_OPEN and event.tickets and event.tickets not in TICKETS_OPEN:
+        changes.append(Change("tickets", "Билеты в продаже" if new_tickets == "on_sale" else "Объявлен старт продаж",
+                              "", new.get("tickets_ru", "").strip() or "подробности на сайте"))
     # площадки
     old_names, new_names = _venue_names(event.venues), _venue_names(new.get("venues", []))
     if new_names and old_names and new_names != old_names:
@@ -151,6 +165,10 @@ class EventStore:
         self.db = sqlite3.connect(str(path))
         self.db.row_factory = sqlite3.Row
         self.db.executescript(SCHEMA)
+        have = {r[1] for r in self.db.execute("PRAGMA table_info(events)")}
+        for col, decl in ADDED_COLUMNS.items():
+            if col not in have:
+                self.db.execute(f"ALTER TABLE events ADD COLUMN {col} {decl}")
 
     # --- чтение ---
     def _event(self, row: sqlite3.Row) -> Event:
@@ -182,13 +200,14 @@ class EventStore:
     def add(self, event: Event) -> None:
         self.db.execute(
             "INSERT INTO events (id, rank, category, artist, title, dates_ru, date_precision, start_date, end_date,"
-            " price_ru, is_free, status, venues, official_url, venue_url, first_sent_at, updated_at, updates_sent)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " price_ru, is_free, status, venues, official_url, venue_url, tickets, tickets_ru, first_sent_at,"
+            " updated_at, updates_sent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (event.id, event.rank, event.category, event.artist, event.title, event.dates_ru, event.date_precision,
              event.start_date,
              event.end_date, event.price_ru, int(event.is_free), event.status,
              json.dumps(event.venues, ensure_ascii=False), event.official_url, event.venue_url,
-             event.first_sent_at, event.updated_at or event.first_sent_at, event.updates_sent))
+             event.tickets, event.tickets_ru, event.first_sent_at, event.updated_at or event.first_sent_at,
+             event.updates_sent))
 
     def add_source(self, event_id: str, item_key: str, url: str, title: str, kind: str, now: datetime) -> None:
         self.db.execute("INSERT OR IGNORE INTO event_sources VALUES (?, ?, ?, ?, ?, ?)",
@@ -211,6 +230,10 @@ class EventStore:
             fields["venues"] = json.dumps(new["venues"], ensure_ascii=False)
         if new.get("status") in ("postponed", "cancelled"):
             fields["status"] = new["status"]
+        if new.get("tickets") in (*TICKETS_OPEN, "later", "not_needed"):
+            fields["tickets"] = new["tickets"]
+        if new.get("tickets_ru"):
+            fields["tickets_ru"] = new["tickets_ru"]
         for key in ("official_url", "venue_url"):
             if new.get(key):
                 fields[key] = new[key]
@@ -232,6 +255,11 @@ class EventStore:
 
     def commit(self) -> None:
         self.db.commit()
+
+    def compact(self) -> None:
+        """Удалённые строки SQLite место не возвращает: без VACUUM файл только растёт, а GitHub не примет
+        память бота больше 100 МБ."""
+        self.db.execute("VACUUM")
 
     def close(self) -> None:
         self.db.close()  # без commit — изменения отбрасываются (так работает dry-run)

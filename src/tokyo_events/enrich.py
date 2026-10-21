@@ -53,6 +53,8 @@ class Details(BaseModel):
     is_free: bool
     venues: list[Venue]
     summary_ru: str
+    tickets: Literal["on_sale", "sale_announced", "later", "not_needed", "unknown"] = "unknown"
+    tickets_ru: str = ""   # когда и как купить: «продажа с 1 ноября 2026, 10:00»
     # заполняет код — модель к ссылкам не прикасается
     official_url: str = ""
     venue_url: str = ""
@@ -88,6 +90,8 @@ def schema() -> dict[str, Any]:
         "is_free": {"type": "boolean"},
         "venues": {"type": "array", "items": venue},
         "summary_ru": s,
+        "tickets": {"type": "string", "enum": ["on_sale", "sale_announced", "later", "not_needed", "unknown"]},
+        "tickets_ru": s,
     })
 
 

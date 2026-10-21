@@ -204,11 +204,41 @@ def test_no_clear_dates_means_no_notification_yet(cfg, store, classifier, enrich
     fetch = FakeFetcher({"gn_tokyo_festivals": [item("Открытие в 2027", hours_ago=1), item("Где-то весной", hours_ago=2),
                                                  item("Неизвестно когда", hours_ago=3)]})
     report = run(cfg, state, store, fetch, classifier, enricher, sender, now=NOW)
-    assert report.sent["green"] == 1 and report.no_dates == 2  # «весна 2027» — примерные даты, это можно
-    assert "📅 весна 2027" in sender.sent[0][0]
+    # «весна 2027» — примерные даты: ждём точных дат или старта продаж билетов
+    assert report.sent["green"] == 0 and report.no_dates == 2 and report.too_early == 1
     # пропущенные без дат не попали в базу: новость с датами потом придёт как новое событие
-    assert [(e.title, e.dates_ru, e.date_precision) for e in store.recent()] == [
-        ("Где-то весной", "весна 2027", "approximate")]
+    assert store.count() == 0 and not sender.sent
+
+
+def test_far_events_wait_for_ticket_sales(cfg, store, classifier, enricher, transport, sender):
+    """Правило пользователя (21.10.2026): далёкое событие (больше 60 дней) или без точных дат — только когда
+    билеты уже продаются или объявлен старт продаж. Скидки и концерты своих артистов — как раньше."""
+    far = {"dates_ru": "15–23 января 2027", "start_date": "2027-01-15", "end_date": "2027-01-23"}
+    transport.rules = {**green("Далеко без билетов", "Далеко, продажа объявлена", "Скоро", "Весной, билеты в продаже",
+                               "Отель откроется летом"),
+                       "Тур Ado": {"rank": "purple", "category": "concert", "artist": "Ado"},
+                       "Скидка зимой": {"rank": "green", "category": "deal"}}
+    transport.details = {
+        "Далеко без билетов": details(**far, tickets="later"),
+        "Далеко, продажа объявлена": details(**far, tickets="sale_announced",
+                                             tickets_ru="продажа с 1 ноября 2026, 10:00"),
+        "Скоро": details(dates_ru="20–21 ноября 2026", start_date="2026-11-20", end_date="2026-11-21"),
+        "Весной, билеты в продаже": details(dates_ru="весна 2027", date_precision="approximate", start_date="",
+                                            end_date="", tickets="on_sale", tickets_ru="уже в продаже"),
+        "Отель откроется летом": details(dates_ru="15 июля 2027", start_date="2027-07-15", end_date="2027-07-15",
+                                         tickets="not_needed"),
+        "Тур Ado": details(**far),
+        "Скидка зимой": details(**far, discount_pct=50),
+    }
+    titles = list(transport.details)
+    fetch = FakeFetcher({"gn_tokyo_festivals": [item(t, hours_ago=i + 1) for i, t in enumerate(titles)]})
+    report = run(cfg, ready(cfg), store, fetch, classifier, enricher, sender, now=NOW)
+    assert report.too_early == 2
+    assert {e.title for e in store.recent()} == {"Далеко, продажа объявлена", "Скоро", "Весной, билеты в продаже",
+                                                 "Тур Ado", "Скидка зимой"}
+    announced = next(t for t, _ in sender.sent if "Далеко, продажа объявлена" in t)
+    assert "🎫 продажа с 1 ноября 2026, 10:00" in announced
+    assert store.get(next(e.id for e in store.recent() if e.title == "Скоро")).tickets == "unknown"
 
 
 def test_unconfirmed_or_ended_events_are_skipped(cfg, store, classifier, enricher, transport, sender):

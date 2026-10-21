@@ -58,6 +58,7 @@ class Filters(BaseModel):
     silent_ranks: list[Rank] = ["green"]
     memory_days: int = 45
     memory_events: int = 150   # сколько последних событий из базы показывать модели для поиска дублей/обновлений
+    far_days: int = 60         # начало позже — присылаем, только если билеты продаются или объявлен старт продаж
     seen_days: int = 60
     max_new_undated: int = 10
 
@@ -95,6 +96,8 @@ class Hotels(BaseModel):
                          Stay(checkin="fri", nights=2), Stay(checkin="today", nights=1)]
     weeks_ahead: int = 4          # цены на столько недель вперёд — из них «обычная цена»
     alert_weeks: int = 2          # о скидках сообщать на ближайшие N недель («сегодня» — только сегодня)
+    soon_days: int = 1            # заезд не позже чем через столько дней (1 — сегодня и завтра)…
+    soon_min_pct: int = 60        # …только при такой скидке: иначе не успеть собраться
     min_compare: int = 2          # сколько других недель нужно, чтобы считать «обычную цену»
     history_days: int = 21
     min_saving_yen: int = 3000

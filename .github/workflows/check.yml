@@ -3,7 +3,7 @@
 # Три job:
 #   run   — сбор, оценка, отправка. Токен GitHub только на чтение: процесс обрабатывает контент из интернета.
 #   save  — сохраняет память бота в ветку state (здесь токен на запись, но чужой контент не обрабатывается).
-#   alert — сообщение в Telegram, если что-то упало.
+#   alert — сообщение в Telegram: при первом сбое (дальше подряд не повторяет) и когда снова заработало.
 name: check
 
 on:
@@ -98,17 +98,37 @@ jobs:
 
   alert:
     needs: [run, save]
-    if: failure()
+    if: always() && !cancelled()
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    permissions: {}
+    permissions:
+      actions: read  # чем закончился прошлый запуск
     steps:
       - name: Сообщить в Telegram
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          TEXT: "⚠️ Tokyo Events: проверка событий завершилась с ошибкой: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          RUN_RESULT: ${{ needs.run.result }}
+          SAVE_RESULT: ${{ needs.save.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
+          # текущий запуск ещё идёт, поэтому последний завершённый — прошлый. Не узнали — считаем, что прошлый был в порядке
+          prev=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/check.yml/runs?status=completed&per_page=1" \
+            --jq '.workflow_runs[0].conclusion' 2>/dev/null || true)
+          if [ "$RUN_RESULT" = failure ] || [ "$SAVE_RESULT" = failure ]; then
+            # о сбое сообщаем один раз, а не каждые 2 часа
+            if [ "$prev" = failure ]; then echo "прошлый запуск тоже с ошибкой — уже сообщали"; exit 0; fi
+            if [ "$RUN_RESULT" = failure ]; then
+              TEXT="⚠️ Tokyo Events: проверка событий завершилась с ошибкой. Повторять не буду — напишу, когда заработает. ${RUN_URL}"
+            else
+              TEXT="⚠️ Tokyo Events: не сохранилась память бота — уже присланное может прийти повторно. Повторять не буду — напишу, когда заработает. ${RUN_URL}"
+            fi
+          elif [ "$prev" = failure ] && [ "$SAVE_RESULT" = success ]; then
+            TEXT="✅ Tokyo Events снова работает."
+          else
+            exit 0
+          fi
           if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
             echo "Telegram не настроен — оповещение только письмом GitHub"; exit 0
           fi

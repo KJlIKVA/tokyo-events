@@ -73,6 +73,37 @@ def test_postponed_cancelled():
     assert diff(ev(status="cancelled"), new(status="cancelled")) == []
 
 
+def test_ticket_sale_announced_once():
+    assert labels(diff(ev(tickets="later"), new(tickets="sale_announced", tickets_ru="с 1 ноября"))) == [
+        "Объявлен старт продаж"]
+    assert labels(diff(ev(tickets="unknown"), new(tickets="on_sale"))) == ["Билеты в продаже"]
+    assert diff(ev(tickets="sale_announced"), new(tickets="on_sale")) == []  # о старте продаж уже сообщили
+    assert diff(ev(tickets="later"), new(tickets="unknown")) == []
+    assert diff(ev(tickets=""), new(tickets="on_sale")) == []  # старые события из базы: о билетах не знаем
+
+
+def test_old_database_gets_ticket_columns(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "events.db"
+    old = sqlite3.connect(path)  # база без колонок tickets (как до 21.10.2026)
+    old.execute("CREATE TABLE events (id TEXT PRIMARY KEY, rank TEXT NOT NULL, category TEXT NOT NULL DEFAULT "
+                "'other', artist TEXT NOT NULL DEFAULT '', title TEXT NOT NULL, dates_ru TEXT NOT NULL DEFAULT '', "
+                "date_precision TEXT NOT NULL DEFAULT '', start_date TEXT NOT NULL DEFAULT '', end_date TEXT NOT NULL "
+                "DEFAULT '', price_ru TEXT NOT NULL DEFAULT '', is_free INTEGER NOT NULL DEFAULT 0, status TEXT NOT "
+                "NULL DEFAULT 'scheduled', venues TEXT NOT NULL DEFAULT '[]', official_url TEXT NOT NULL DEFAULT '', "
+                "venue_url TEXT NOT NULL DEFAULT '', first_sent_at TEXT NOT NULL, updated_at TEXT NOT NULL, "
+                "updates_sent INTEGER NOT NULL DEFAULT 0)")
+    old.execute("INSERT INTO events (id, rank, title, first_sent_at, updated_at) VALUES ('a', 'green', 'A', 'x', 'x')")
+    old.commit()
+    old.close()
+    store = EventStore(path)
+    assert store.get("a").tickets == ""
+    store.apply("a", new(tickets="sale_announced", tickets_ru="с 1 ноября"), [], NOW)
+    store.add(ev(id="b", tickets="on_sale", tickets_ru="в продаже"))
+    assert (store.get("a").tickets_ru, store.get("b").tickets) == ("с 1 ноября", "on_sale")
+
+
 def test_store_add_apply_history_and_reload(tmp_path):
     path = tmp_path / "events.db"
     store = EventStore(path)

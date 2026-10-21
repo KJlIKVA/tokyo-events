@@ -59,6 +59,8 @@ def _body(v: Verdict, item: Item, d: Details) -> list[str]:
     """Даты, цена, место, ссылка, описание, теги — общая часть нового события и обновления."""
     e = html.escape
     blocks = [f"📅 {e(d.dates_ru)}" if d.dates_ru else "📅 Даты пока не объявлены", _price_line(d)]
+    if d.tickets_ru:
+        blocks.append(f"🎫 {e(d.tickets_ru)}")
     if d.venues:
         # площадки тура — одним блоком, по строке на каждую
         blocks.append("\n".join(_venue_line(x) for x in d.venues))
@@ -97,6 +99,7 @@ def format_update(event: Event, v: Verdict, item: Item, d: Details, changes: lis
         "dates_ru": d.dates_ru if d.has_dates else event.dates_ru,
         "price_ru": d.price_ru or event.price_ru,
         "is_free": d.is_free or event.is_free,
+        "tickets_ru": d.tickets_ru or event.tickets_ru,
         "venues": d.venues or [Venue(**x) for x in event.venues],
         "official_url": d.official_url or event.official_url,
         "venue_url": d.venue_url or event.venue_url,

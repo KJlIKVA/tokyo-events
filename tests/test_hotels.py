@@ -120,14 +120,59 @@ def test_friday_two_nights_compared_with_other_fridays(cfg):
 def test_same_day_deal_has_sound_and_order_is_by_color(cfg):
     only(cfg, ("today", 1), ("sat", 1))
     cfg.hotels.max_per_area = 5
-    # сегодня (вт) дешевле других вторников на 20% — зелёная, но «сегодня» — со звуком;
-    # первой идёт более крупная скидка −60% на субботу
-    api = FakeApi(lambda no, d, n: 24000 if d == TODAY else (12000 if d == SAT else 30000))
+    # сегодня (вт) дешевле других вторников на 65% — со звуком и первой, хотя на субботу −70%: цвет тот же
+    api = FakeApi(lambda no, d, n: 10500 if d == TODAY else (9000 if d == SAT else 30000))
     report, sender, _ = run_hotels(cfg, api)
     assert report.sent == 2
-    assert sender.sent[0][0].startswith("🟣 ♨️ −60%")
-    today_text, silent = sender.sent[1]
-    assert today_text.startswith("🟢 ♨️ −20%") and "⚡ Сегодня, вт 13 – ср 14 октября" in today_text and not silent
+    today_text, silent = sender.sent[0]
+    assert today_text.startswith("🟣 ♨️ −65%") and "⚡ Сегодня, вт 13 – ср 14 октября" in today_text and not silent
+    assert sender.sent[1][0].startswith("🟣 ♨️ −70%")
+
+
+def test_today_and_tomorrow_only_with_big_discount(cfg):
+    """Правило пользователя (21.10.2026): заезд сегодня или завтра — только при скидке от 60%, иначе не успеть."""
+    only(cfg, ("today", 1), ("fri", 1))
+    cfg.hotels.max_per_area = 5
+    thursday = NOW.replace(day=15)  # завтра пятница
+    fri = date(2026, 10, 16)
+    api = FakeApi(lambda no, d, n: 15000 if d in (date(2026, 10, 15), fri) else 30000)  # −50% сегодня и в пятницу
+    report, _, _ = run_hotels(cfg, api, now=thursday)
+    assert report.sent == 0
+    api = FakeApi(lambda no, d, n: 12000 if d == fri else 30000)  # пятница −60%
+    report, sender, _ = run_hotels(cfg, api, now=thursday)
+    assert report.sent == 1 and sender.sent[0][0].startswith("🟣 ♨️ −60%")
+    api = FakeApi(lambda no, d, n: 15000 if d == fri else 30000)  # во вторник та же пятница −50% — через 3 дня, можно
+    report, _, _ = run_hotels(cfg, api)
+    assert report.sent == 1
+
+
+def test_price_history_stores_only_changes(cfg):
+    """Одна и та же цена при каждой проверке — одна строка: иначе база растёт на ~15 МБ в день."""
+    only(cfg, ("sat", 1))
+    store = EventStore(":memory:")
+    for hour in (9, 15, 19):
+        run_hotels(cfg, FakeApi(lambda no, d, n: 30000), store, now=NOW.replace(hour=hour))
+    rows = store.db.execute("SELECT price, seen FROM hotel_price_runs ORDER BY stay_date").fetchall()
+    assert [tuple(r) for r in rows] == [(30000, 3)] * 4
+    run_hotels(cfg, FakeApi(lambda no, d, n: 25000), store, now=NOW.replace(day=14, hour=9))
+    assert store.db.execute("SELECT COUNT(*) FROM hotel_price_runs").fetchone()[0] == 8
+
+
+def test_old_price_table_is_migrated(cfg):
+    from tokyo_events.hotels import prepare_db
+
+    db = EventStore(":memory:").db
+    db.execute("CREATE TABLE hotel_prices (hotel_no TEXT, stay_date TEXT, nights INTEGER, observed_at TEXT, "
+               "price INTEGER, area TEXT, plan_name TEXT, raw TEXT)")
+    obs = [("09", 30000), ("15", 30000), ("19", 20000), ("21", 30000)]
+    db.executemany("INSERT INTO hotel_prices VALUES ('1', '2026-10-17', 1, ?, ?, 'x', '', '')",
+                   [(f"2026-10-13T{h}:00:00+09:00", p) for h, p in obs])
+    prepare_db(db)
+    rows = db.execute("SELECT price, last_at, seen FROM hotel_price_runs ORDER BY last_at").fetchall()
+    assert [tuple(r) for r in rows] == [(30000, "2026-10-13T15:00:00+09:00", 2),
+                                        (20000, "2026-10-13T19:00:00+09:00", 1),
+                                        (30000, "2026-10-13T21:00:00+09:00", 1)]
+    assert not db.execute("SELECT 1 FROM sqlite_master WHERE name = 'hotel_prices'").fetchone()
 
 
 def test_one_best_deal_per_area_per_run(cfg):

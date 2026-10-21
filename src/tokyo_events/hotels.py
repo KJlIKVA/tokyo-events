@@ -5,12 +5,12 @@
 - с ценами того же отеля на тот же вариант в другие недели (обычная цена);
 - с прошлыми ценами того же отеля на ту же дату (подешевело).
 Скидка от порога deals (10%) и экономия заметная — уведомление с цветом по размеру скидки.
+Заезд сегодня или завтра — только при скидке от hotels.soon_min_pct (60%): на меньшую не успеть собраться.
 """
 
 from __future__ import annotations
 
 import html
-import json
 import logging
 import sqlite3
 import statistics
@@ -36,17 +36,15 @@ MONTHS_RU = ["января", "февраля", "марта", "апреля", "м
              "ноября", "декабря"]
 
 SCHEMA = """
-CREATE TABLE IF NOT EXISTS hotel_prices (      -- каждое наблюдение цены
-    hotel_no    TEXT NOT NULL,
-    stay_date   TEXT NOT NULL,                 -- дата заезда
-    nights      INTEGER NOT NULL,
-    observed_at TEXT NOT NULL,
-    price       INTEGER NOT NULL,              -- за номер на всех гостей за (первую) ночь, ¥
-    area        TEXT NOT NULL,
-    plan_name   TEXT NOT NULL DEFAULT '',
-    raw         TEXT NOT NULL DEFAULT ''       -- исходные rakutenCharge/total/chargeFlag — для проверки
+CREATE TABLE IF NOT EXISTS hotel_price_runs (  -- цены отеля на дату заезда: одинаковая цена подряд — одна строка
+    hotel_no  TEXT NOT NULL,
+    stay_date TEXT NOT NULL,                   -- дата заезда
+    nights    INTEGER NOT NULL,
+    price     INTEGER NOT NULL,                -- за номер на всех гостей за (первую) ночь, ¥
+    last_at   TEXT NOT NULL,                   -- когда последний раз видели эту цену
+    seen      INTEGER NOT NULL DEFAULT 1       -- сколько проверок подряд она держалась (вес в медиане)
 );
-CREATE INDEX IF NOT EXISTS hotel_prices_idx ON hotel_prices (hotel_no, stay_date, nights);
+CREATE INDEX IF NOT EXISTS hotel_price_runs_idx ON hotel_price_runs (hotel_no, stay_date, nights);
 CREATE TABLE IF NOT EXISTS hotel_alerts (      -- о чём уже сообщили
     hotel_no  TEXT NOT NULL,
     stay_date TEXT NOT NULL,
@@ -56,6 +54,19 @@ CREATE TABLE IF NOT EXISTS hotel_alerts (      -- о чём уже сообщи�
     at        TEXT NOT NULL,
     PRIMARY KEY (hotel_no, stay_date, nights)
 );
+"""
+
+# 21.10.2026: каждое наблюдение отдельной строкой (hotel_prices) раздуло базу до 105 МБ за неделю, GitHub перестал
+# принимать память бота — и каждый запуск заново присылал уже присланное. Переносим историю в hotel_price_runs.
+MIGRATE_OLD = """
+INSERT INTO hotel_price_runs (hotel_no, stay_date, nights, price, last_at, seen)
+SELECT hotel_no, stay_date, nights, price, MAX(observed_at), COUNT(*) FROM (
+    SELECT *, SUM(changed) OVER (PARTITION BY hotel_no, stay_date, nights ORDER BY observed_at) AS run FROM (
+        SELECT hotel_no, stay_date, nights, observed_at, price,
+               price IS NOT LAG(price) OVER (PARTITION BY hotel_no, stay_date, nights ORDER BY observed_at) AS changed
+        FROM hotel_prices))
+GROUP BY hotel_no, stay_date, nights, run;
+DROP TABLE hotel_prices;
 """
 
 
@@ -76,7 +87,6 @@ class Offer:
     address: str = ""
     review: float | None = None
     min_charge: int = 0      # hotelMinCharge: самая низкая цена отеля за человека (по данным Rakuten)
-    raw: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -195,8 +205,7 @@ def parse_offers(hotels: list[dict], area: str, stay_date: str, nights: int, adu
                     url=plan.get("reserveUrl") or info.get("planListUrl") or info.get("hotelInformationUrl") or "",
                     address=f"{info.get('address1') or ''}{info.get('address2') or ''}",
                     review=float(info["reviewAverage"]) if info.get("reviewAverage") else None,
-                    min_charge=int(info.get("hotelMinCharge") or 0),
-                    raw={k: charge.get(k) for k in ("rakutenCharge", "total", "chargeFlag")})
+                    min_charge=int(info.get("hotelMinCharge") or 0))
     return list(best.values())
 
 
@@ -234,19 +243,21 @@ def find_deals(db: Any, offers: list[Offer], alert: set[tuple[str, int]], cfg: C
                 # номера раскуплены и остались люксы (13.10.2026: 79 200 ¥ «вместо 330 000 ¥» при минимуме 9 900 ¥)
                 continue
             others = [x.price for d, x in dates.items() if d != stay]
-            history = [r[0] for r in db.execute(
-                "SELECT price FROM hotel_prices WHERE hotel_no = ? AND stay_date = ? AND nights = ? "
-                "AND observed_at >= ?", (o.hotel_no, stay, o.nights, since))]
+            history = [price for price, seen in db.execute(
+                "SELECT price, seen FROM hotel_price_runs WHERE hotel_no = ? AND stay_date = ? AND nights = ? "
+                "AND last_at >= ?", (o.hotel_no, stay, o.nights, since)) for _ in range(seen)]
             candidates = []
             if len(others) >= h.min_compare:
                 # самая низкая из других недель, не медиана: в сезон дальние даты раскуплены и медиана завышена
                 candidates.append((min(others), "usual"))
             if history:
                 candidates.append((int(statistics.median(history)), "history"))
+            # заезд сегодня или завтра — только очень большая скидка: иначе не успеть собраться
+            min_pct = h.soon_min_pct if (date.fromisoformat(stay) - today).days <= h.soon_days else 0
             for baseline, basis in sorted(candidates, reverse=True):
                 pct = round((1 - o.price / baseline) * 100) if baseline else 0
                 rank = _rank(pct, cfg)
-                if rank and baseline - o.price >= h.min_saving_yen:
+                if rank and pct >= min_pct and baseline - o.price >= h.min_saving_yen:
                     deals.append(Deal(o, baseline, pct, basis, rank, today=stay == today.isoformat()))
                     break
     return deals
@@ -322,7 +333,27 @@ def due(last: str | None, now: datetime, hours: list[int]) -> bool:
 
 
 def hotels_due(db: sqlite3.Connection, now: datetime, hours: list[int]) -> bool:
-    return due(db.execute("SELECT MAX(observed_at) FROM hotel_prices").fetchone()[0], now, hours)
+    return due(db.execute("SELECT MAX(last_at) FROM hotel_price_runs").fetchone()[0], now, hours)
+
+
+def prepare_db(db: sqlite3.Connection) -> None:
+    db.executescript(SCHEMA)
+    if db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'hotel_prices'").fetchone():
+        db.executescript(MIGRATE_OLD)
+        log.info("отели: история цен перенесена в hotel_price_runs")
+
+
+def record_prices(db: sqlite3.Connection, offers: list[Offer], at: str) -> None:
+    """Цена не изменилась с прошлой проверки — продлеваем её строку, изменилась — новая строка."""
+    for o in offers:
+        last = db.execute("SELECT rowid, price FROM hotel_price_runs WHERE hotel_no = ? AND stay_date = ? "
+                          "AND nights = ? ORDER BY last_at DESC LIMIT 1",
+                          (o.hotel_no, o.stay_date, o.nights)).fetchone()
+        if last and last[1] == o.price:
+            db.execute("UPDATE hotel_price_runs SET last_at = ?, seen = seen + 1 WHERE rowid = ?", (at, last[0]))
+        else:
+            db.execute("INSERT INTO hotel_price_runs (hotel_no, stay_date, nights, price, last_at) "
+                       "VALUES (?, ?, ?, ?, ?)", (o.hotel_no, o.stay_date, o.nights, o.price, at))
 
 
 def check_hotels(cfg: Config, store: EventStore, sender: Any, now: datetime, client: httpx.Client,
@@ -336,7 +367,7 @@ def check_hotels(cfg: Config, store: EventStore, sender: Any, now: datetime, cli
         log.info("отели: нет RAKUTEN_APPLICATION_ID / RAKUTEN_ACCESS_KEY — проверка цен выключена")
         return report
     db = store.db
-    db.executescript(SCHEMA)
+    prepare_db(db)
     if not force and not hotels_due(db, now, h.run_at_hours):
         log.info("отели: цены проверяются в %s ч по Токио — сейчас пропуск", h.run_at_hours)
         return report
@@ -373,9 +404,7 @@ def check_hotels(cfg: Config, store: EventStore, sender: Any, now: datetime, cli
     deals = sorted(find_deals(db, offers, alert, cfg, today), key=lambda d: (order[d.rank], -d.today, -d.pct))
     per_area: dict[str, int] = {}
     at = now.isoformat(timespec="seconds")
-    db.executemany("INSERT INTO hotel_prices VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                   [(o.hotel_no, o.stay_date, o.nights, at, o.price, o.area, o.plan_name, json.dumps(o.raw))
-                    for o in offers])
+    record_prices(db, offers, at)
     for deal in deals:
         if report.sent >= h.max_alerts_per_run:
             break
@@ -400,7 +429,7 @@ def check_hotels(cfg: Config, store: EventStore, sender: Any, now: datetime, cli
                    (o.hotel_no, o.stay_date, o.nights, o.price, deal.pct, at))
         report.sent += 1
     # прошедшие даты не нужны
-    db.execute("DELETE FROM hotel_prices WHERE stay_date < ?", (today.isoformat(),))
+    db.execute("DELETE FROM hotel_price_runs WHERE stay_date < ?", (today.isoformat(),))
     db.execute("DELETE FROM hotel_alerts WHERE stay_date < ?", (today.isoformat(),))
     log.info("отели: запросов %d, предложений %d, скидок отправлено %d, ошибок %d",
              report.checked, report.offers, report.sent, len(report.errors))

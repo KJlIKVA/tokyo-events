@@ -63,6 +63,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         print("dry-run: состояние и база не сохранены, в Telegram ничего не отправлено")
     else:
         store.commit()
+        store.compact()
         state.save(args.state)
     store.close()
     print(report.summary())
